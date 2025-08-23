@@ -1,9 +1,12 @@
 import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import logging
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 import os
+from urllib.parse import urlparse
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, 
@@ -26,67 +29,127 @@ class SupportBot:
         self.token = token
         self.main_admin_id = main_admin_id
         self.admin_group_id = admin_group_id
+        self.database_url = os.getenv("DATABASE_URL")
         self.init_database()
         
+    def get_db_connection(self):
+        """Get database connection - PostgreSQL or SQLite fallback"""
+        if self.database_url:
+            # PostgreSQL connection
+            return psycopg2.connect(self.database_url, cursor_factory=RealDictCursor)
+        else:
+            # SQLite fallback
+            return sqlite3.connect('support_tickets.db')
+        
     def init_database(self):
-        """Initialize SQLite database"""
-        conn = sqlite3.connect('support_tickets.db')
+        """Initialize database - PostgreSQL or SQLite"""
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Tickets table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                username TEXT,
-                category TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                description TEXT,
-                status TEXT DEFAULT 'open',
-                priority TEXT DEFAULT 'normal',
-                assigned_admin INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                closed_at TIMESTAMP
-            )
-        ''')
-        
-        # Messages table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ticket_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                username TEXT,
-                message TEXT,
-                message_type TEXT DEFAULT 'text',
-                file_id TEXT,
-                is_admin BOOLEAN DEFAULT FALSE,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (ticket_id) REFERENCES tickets (id)
-            )
-        ''')
-        
-        # Admins table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS admins (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                role TEXT DEFAULT 'admin',
-                added_by INTEGER,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Categories table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS categories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+        if self.database_url:
+            # PostgreSQL table creation
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    category TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    description TEXT,
+                    status TEXT DEFAULT 'open',
+                    priority TEXT DEFAULT 'normal',
+                    assigned_admin BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticket_messages (
+                    id SERIAL PRIMARY KEY,
+                    ticket_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    message TEXT,
+                    message_type TEXT DEFAULT 'text',
+                    file_id TEXT,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_id) REFERENCES tickets (id)
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    role TEXT DEFAULT 'admin',
+                    added_by BIGINT,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS categories (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+        else:
+            # SQLite table creation (fallback)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    category TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    description TEXT,
+                    status TEXT DEFAULT 'open',
+                    priority TEXT DEFAULT 'normal',
+                    assigned_admin INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticket_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    message TEXT,
+                    message_type TEXT DEFAULT 'text',
+                    file_id TEXT,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_id) REFERENCES tickets (id)
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    role TEXT DEFAULT 'admin',
+                    added_by INTEGER,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
         
         # Insert default categories
         default_categories = [
@@ -95,63 +158,92 @@ class SupportBot:
             ('Partnership', 'Partnership and collaboration requests')
         ]
         
-        cursor.executemany('''
-            INSERT OR IGNORE INTO categories (name, description) VALUES (?, ?)
-        ''', default_categories)
-        
-        # Insert main admin
-        cursor.execute('''
-            INSERT OR IGNORE INTO admins (user_id, username, role, added_by) 
-            VALUES (?, ?, 'main_admin', ?)
-        ''', (self.main_admin_id, 'Main Admin', self.main_admin_id))
+        if self.database_url:
+            # PostgreSQL syntax
+            cursor.executemany('''
+                INSERT INTO categories (name, description) VALUES (%s, %s)
+                ON CONFLICT (name) DO NOTHING
+            ''', default_categories)
+            
+            # Insert main admin
+            cursor.execute('''
+                INSERT INTO admins (user_id, username, role, added_by) 
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id) DO NOTHING
+            ''', (self.main_admin_id, 'Main Admin', 'main_admin', self.main_admin_id))
+        else:
+            # SQLite syntax
+            cursor.executemany('''
+                INSERT OR IGNORE INTO categories (name, description) VALUES (?, ?)
+            ''', default_categories)
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO admins (user_id, username, role, added_by) 
+                VALUES (?, ?, 'main_admin', ?)
+            ''', (self.main_admin_id, 'Main Admin', self.main_admin_id))
         
         conn.commit()
         conn.close()
+        
+        # Log database type
+        db_type = "PostgreSQL" if self.database_url else "SQLite"
+        print(f"🗄️ Database initialized: {db_type}")
+
+    def execute_query(self, query: str, params: tuple = (), fetch_one: bool = False, fetch_all: bool = False):
+        """Execute database query with proper parameter binding"""
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Convert SQLite ? to PostgreSQL %s if needed
+            if self.database_url and '?' in query:
+                query = query.replace('?', '%s')
+            
+            cursor.execute(query, params)
+            
+            if fetch_one:
+                result = cursor.fetchone()
+                if self.database_url and result:
+                    # Convert RealDictRow to tuple for compatibility
+                    result = tuple(result.values())
+                return result
+            elif fetch_all:
+                results = cursor.fetchall()
+                if self.database_url and results:
+                    # Convert RealDictRow to tuples for compatibility
+                    results = [tuple(row.values()) for row in results]
+                return results
+            else:
+                conn.commit()
+                return cursor.lastrowid if hasattr(cursor, 'lastrowid') else cursor.rowcount
+        finally:
+            conn.close()
 
     def get_categories(self) -> List[tuple]:
         """Get all available categories"""
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT name, description FROM categories ORDER BY name')
-        categories = cursor.fetchall()
-        conn.close()
-        return categories
+        return self.execute_query('SELECT name, description FROM categories ORDER BY name', fetch_all=True)
 
     def get_ticket(self, ticket_id: int) -> Optional[tuple]:
         """Get ticket details"""
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        cursor.execute('''
+        return self.execute_query('''
             SELECT id, user_id, username, category, subject, description, 
                    status, assigned_admin, created_at, updated_at
             FROM tickets WHERE id = ?
-        ''', (ticket_id,))
-        result = cursor.fetchone()
-        conn.close()
-        return result
+        ''', (ticket_id,), fetch_one=True)
 
     def get_ticket_messages(self, ticket_id: int) -> List[tuple]:
         """Get all messages for a ticket"""
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        cursor.execute('''
+        return self.execute_query('''
             SELECT user_id, username, message, message_type, file_id, 
                    is_admin, timestamp
             FROM ticket_messages 
             WHERE ticket_id = ? 
             ORDER BY timestamp ASC
-        ''', (ticket_id,))
-        messages = cursor.fetchall()
-        conn.close()
-        return messages
+        ''', (ticket_id,), fetch_all=True)
 
     def is_admin(self, user_id: int) -> bool:
         """Check if user is an admin"""
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT role FROM admins WHERE user_id = ?', (user_id,))
-        result = cursor.fetchone()
-        conn.close()
+        result = self.execute_query('SELECT role FROM admins WHERE user_id = ?', (user_id,), fetch_one=True)
         return result is not None
 
     def is_main_admin(self, user_id: int) -> bool:
