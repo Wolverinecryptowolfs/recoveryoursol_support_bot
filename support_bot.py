@@ -483,14 +483,10 @@ class SupportBot:
         active_ticket = context.user_data.get('active_ticket')
         if not active_ticket:
             # Check if user has open tickets
-            conn = sqlite3.connect('support_tickets.db')
-            cursor = conn.cursor()
-            cursor.execute('''
+            result = self.execute_query('''
                 SELECT id FROM tickets WHERE user_id = ? AND status = 'open' 
                 ORDER BY created_at DESC LIMIT 1
-            ''', (user.id,))
-            result = cursor.fetchone()
-            conn.close()
+            ''', (user.id,), fetch_one=True)
             
             if result:
                 active_ticket = result[0]
@@ -505,20 +501,15 @@ class SupportBot:
         if message_type == 'photo':
             file_id = update.message.photo[-1].file_id
         
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        cursor.execute('''
+        self.execute_query('''
             INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, FALSE)
         ''', (active_ticket, user.id, user.username or user.first_name, message_text, message_type, file_id))
         
         # Update ticket timestamp
-        cursor.execute('''
+        self.execute_query('''
             UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
         ''', (active_ticket,))
-        
-        conn.commit()
-        conn.close()
         
         # Notify admins
         await self.notify_admins_ticket_update(context, active_ticket, user, message_text, message_type, file_id)
@@ -699,54 +690,58 @@ class SupportBot:
             await update.message.reply_text("❌ Access denied. Admin only.")
             return
         
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
+        # Get ticket statistics using execute_query
+        open_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('open',), fetch_one=True)[0]
+        closed_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('closed',), fetch_one=True)[0]
+        total_tickets = self.execute_query('SELECT COUNT(*) FROM tickets', fetch_one=True)[0]
         
-        # Get ticket statistics
-        cursor.execute('SELECT COUNT(*) FROM tickets WHERE status = "open"')
-        open_tickets = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM tickets WHERE status = "closed"')
-        closed_tickets = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM tickets')
-        total_tickets = cursor.fetchone()[0]
-        
-        # Get recent tickets
-        cursor.execute('''
+        # Get ALL tickets (not just recent)
+        all_tickets = self.execute_query('''
             SELECT id, username, category, subject, status, created_at 
-            FROM tickets ORDER BY created_at DESC LIMIT 10
-        ''')
-        recent_tickets = cursor.fetchall()
-        
-        conn.close()
+            FROM tickets ORDER BY 
+                CASE WHEN status = 'open' THEN 0 ELSE 1 END,
+                created_at DESC
+        ''', fetch_all=True)
         
         dashboard_text = f"📊 **Admin Dashboard**\n\n"
         dashboard_text += f"🎫 **Total Tickets:** {total_tickets}\n"
         dashboard_text += f"🟢 **Open:** {open_tickets}\n"
         dashboard_text += f"🔴 **Closed:** {closed_tickets}\n\n"
-        dashboard_text += "📋 **Recent Tickets:**\n"
+        dashboard_text += "📋 **All Tickets:**\n"
         
-        for ticket in recent_tickets:
-            status_emoji = "🟢" if ticket[4] == "open" else "🔴"
-            dashboard_text += f"{status_emoji} #{ticket[0]} - {ticket[2]} - {ticket[1]} - {ticket[3][:30]}...\n"
+        if all_tickets:
+            for ticket in all_tickets:
+                status_emoji = "🟢" if ticket[4] == "open" else "🔴"
+                username = ticket[1] or "Unknown"
+                subject = ticket[3][:25] + "..." if len(ticket[3]) > 25 else ticket[3]
+                created = ticket[5][:16] if ticket[5] else "N/A"  # Show date/time (YYYY-MM-DD HH:MM)
+                dashboard_text += f"{status_emoji} **#{ticket[0]}** - {ticket[2]}\n"
+                dashboard_text += f"👤 {username} | 📝 {subject}\n"
+                dashboard_text += f"📅 {created}\n\n"
+        else:
+            dashboard_text += "No tickets found.\n"
         
-        await update.message.reply_text(dashboard_text, parse_mode=ParseMode.MARKDOWN)
+        # Truncate if too long for Telegram (4096 chars limit)
+        if len(dashboard_text) > 4000:
+            dashboard_text = dashboard_text[:3800] + "\n\n... [List truncated - too many tickets]"
+        
+        keyboard = [
+            [InlineKeyboardButton("🟢 Open Only", callback_data="list_open"),
+             InlineKeyboardButton("🔴 Closed Only", callback_data="list_closed")],
+            [InlineKeyboardButton("📈 Statistics", callback_data="stats")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(dashboard_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
     async def my_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user's tickets"""
         user_id = update.effective_user.id
         
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
+        tickets = self.execute_query('''
             SELECT id, category, subject, status, created_at 
             FROM tickets WHERE user_id = ? ORDER BY created_at DESC
-        ''', (user_id,))
-        
-        tickets = cursor.fetchall()
-        conn.close()
+        ''', (user_id,), fetch_all=True)
         
         if not tickets:
             await update.message.reply_text("📋 You don't have any tickets yet. Use /ticket to create one.")
