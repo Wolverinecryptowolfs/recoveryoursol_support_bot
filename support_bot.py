@@ -714,7 +714,18 @@ class SupportBot:
                 status_emoji = "🟢" if ticket[4] == "open" else "🔴"
                 username = ticket[1] or "Unknown"
                 subject = ticket[3][:25] + "..." if len(ticket[3]) > 25 else ticket[3]
-                created = ticket[5][:16] if ticket[5] else "N/A"  # Show date/time (YYYY-MM-DD HH:MM)
+                
+                # Handle datetime object from PostgreSQL
+                if ticket[5]:
+                    if hasattr(ticket[5], 'strftime'):
+                        # It's a datetime object
+                        created = ticket[5].strftime("%Y-%m-%d %H:%M")
+                    else:
+                        # It's already a string
+                        created = ticket[5][:16] if len(str(ticket[5])) > 16 else str(ticket[5])
+                else:
+                    created = "N/A"
+                    
                 dashboard_text += f"{status_emoji} **#{ticket[0]}** - {ticket[2]}\n"
                 dashboard_text += f"👤 {username} | 📝 {subject}\n"
                 dashboard_text += f"📅 {created}\n\n"
