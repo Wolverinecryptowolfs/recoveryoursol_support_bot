@@ -507,7 +507,11 @@ class SupportBot:
         await query.answer()
         
         if not self.is_admin(query.from_user.id):
-            await query.edit_message_text("❌ Access denied. Admin only.")
+            # Send new message instead of editing for error cases
+            await context.bot.send_message(
+                chat_id=query.message.chat.id,
+                text="❌ Access denied. Admin only."
+            )
             return
         
         ticket_id = int(query.data.split('_')[1])
@@ -515,7 +519,10 @@ class SupportBot:
         # Get ticket details
         ticket = self.get_ticket(ticket_id)
         if not ticket:
-            await query.edit_message_text("❌ Ticket not found.")
+            await context.bot.send_message(
+                chat_id=query.message.chat.id,
+                text="❌ Ticket not found."
+            )
             return
         
         # Get messages
@@ -531,16 +538,27 @@ class SupportBot:
         ticket_text += f"📋 **Status:** {ticket[6].title()}\n\n"
         ticket_text += f"**📄 Description:**\n{ticket[5]}\n\n"
         
-        # Add recent messages
+        # Add ALL messages (not just recent)
         if messages:
-            ticket_text += "**💬 Recent Messages:**\n"
-            for msg in messages[-5:]:  # Show last 5 messages
+            ticket_text += "**💬 Full Conversation:**\n"
+            for msg in messages:  # Show ALL messages
                 sender = "🛡️ Admin" if msg[5] else "👤 User"
-                ticket_text += f"{sender}: {msg[2][:100]}{'...' if len(msg[2]) > 100 else ''}\n"
+                timestamp = msg[6][:16]  # Show date/time (YYYY-MM-DD HH:MM)
+                
+                if msg[3] == 'photo':  # If it's a photo message
+                    msg_content = f"[📸 Image] {msg[2] or ''}"
+                else:
+                    msg_content = msg[2] or "[No text]"
+                
+                # Keep messages readable but complete
+                if len(msg_content) > 200:
+                    msg_content = msg_content[:200] + "..."
+                
+                ticket_text += f"{timestamp} - {sender}: {msg_content}\n"
         
-        # Truncate if too long
+        # Truncate only if extremely long (increased limit)
         if len(ticket_text) > 4000:
-            ticket_text = ticket_text[:4000] + "..."
+            ticket_text = ticket_text[:3800] + "\n\n... [Message truncated - too many messages]"
         
         keyboard = [
             [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
@@ -548,7 +566,13 @@ class SupportBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(ticket_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        # Send as new message instead of editing to avoid photo/text conflicts
+        await context.bot.send_message(
+            chat_id=query.message.chat.id,
+            text=ticket_text,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
 
     async def take_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Admin takes ownership of ticket"""
