@@ -61,6 +61,7 @@ class SupportBot:
                 message TEXT,
                 message_type TEXT DEFAULT 'text',
                 file_id TEXT,
+                is_admin BOOLEAN DEFAULT FALSE,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (ticket_id) REFERENCES tickets (id)
             )
@@ -116,6 +117,34 @@ class SupportBot:
         conn.close()
         return categories
 
+    def get_ticket(self, ticket_id: int) -> Optional[tuple]:
+        """Get ticket details"""
+        conn = sqlite3.connect('support_tickets.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, user_id, username, category, subject, description, 
+                   status, assigned_admin, created_at, updated_at
+            FROM tickets WHERE id = ?
+        ''', (ticket_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result
+
+    def get_ticket_messages(self, ticket_id: int) -> List[tuple]:
+        """Get all messages for a ticket"""
+        conn = sqlite3.connect('support_tickets.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT user_id, username, message, message_type, file_id, 
+                   is_admin, timestamp
+            FROM ticket_messages 
+            WHERE ticket_id = ? 
+            ORDER BY timestamp ASC
+        ''', (ticket_id,))
+        messages = cursor.fetchall()
+        conn.close()
+        return messages
+
     def is_admin(self, user_id: int) -> bool:
         """Check if user is an admin"""
         conn = sqlite3.connect('support_tickets.db')
@@ -142,9 +171,6 @@ class SupportBot:
             welcome_text += "🔧 **Admin Commands:**\n"
             welcome_text += "/dashboard - View all tickets\n"
             welcome_text += "/stats - View statistics\n"
-            if self.is_main_admin(user.id):
-                welcome_text += "/categories - Manage categories\n"
-                welcome_text += "/admins - Manage admins\n"
         
         await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -179,7 +205,8 @@ class SupportBot:
         
         await query.edit_message_text(
             f"📝 **Category:** {category}\n\n"
-            "Please provide a brief subject/title for your ticket:"
+            "Please provide a brief subject/title for your ticket:",
+            parse_mode=ParseMode.MARKDOWN
         )
         
         context.user_data['expecting'] = 'subject'
@@ -187,6 +214,11 @@ class SupportBot:
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages based on context"""
         user = update.effective_user
+        
+        # Check if admin is replying to ticket
+        if 'replying_to_ticket' in context.user_data and self.is_admin(user.id):
+            await self.handle_admin_reply(update, context)
+            return
         
         if 'expecting' in context.user_data:
             if context.user_data['expecting'] == 'subject':
@@ -207,11 +239,79 @@ class SupportBot:
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle photo messages"""
+        user = update.effective_user
+        
+        # Check if admin is replying to ticket with photo
+        if 'replying_to_ticket' in context.user_data and self.is_admin(user.id):
+            await self.handle_admin_reply(update, context, message_type='photo')
+            return
+            
         if context.user_data.get('expecting') == 'description':
             caption = update.message.caption or "Image attachment"
             await self.create_ticket_final(update, context, caption, update.message.photo[-1].file_id)
         else:
             await self.handle_ticket_message(update, context, message_type='photo')
+
+    async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                               message_type: str = 'text'):
+        """Handle admin reply to ticket"""
+        user = update.effective_user
+        ticket_id = context.user_data['replying_to_ticket']
+        
+        # Get ticket details
+        ticket = self.get_ticket(ticket_id)
+        if not ticket:
+            await update.message.reply_text("❌ Ticket not found.")
+            context.user_data.pop('replying_to_ticket', None)
+            return
+        
+        ticket_user_id = ticket[1]
+        message_text = update.message.text if message_type == 'text' else update.message.caption or "Image from support"
+        file_id = None
+        if message_type == 'photo':
+            file_id = update.message.photo[-1].file_id
+        
+        # Save admin message to database
+        conn = sqlite3.connect('support_tickets.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
+            VALUES (?, ?, ?, ?, ?, ?, TRUE)
+        ''', (ticket_id, user.id, user.username or user.first_name, message_text, message_type, file_id))
+        
+        # Update ticket timestamp
+        cursor.execute('''
+            UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
+        ''', (ticket_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        # Send message to user
+        try:
+            support_text = f"🎫 **Support Team Response (Ticket #{ticket_id})**\n\n{message_text}"
+            
+            if message_type == 'photo' and file_id:
+                await context.bot.send_photo(
+                    chat_id=ticket_user_id,
+                    photo=file_id,
+                    caption=support_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=ticket_user_id,
+                    text=support_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            
+            await update.message.reply_text(f"✅ Reply sent to user for ticket #{ticket_id}")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Failed to send message to user: {str(e)}")
+        
+        # Clear reply mode
+        context.user_data.pop('replying_to_ticket', None)
 
     async def create_ticket_final(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                 description: str, file_id: str = None):
@@ -237,8 +337,8 @@ class SupportBot:
         
         # Add initial message
         cursor.execute('''
-            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
+            VALUES (?, ?, ?, ?, ?, ?, FALSE)
         ''', (ticket_id, user.id, user.username or user.first_name, description, 
               'photo' if file_id else 'text', file_id))
         
@@ -327,9 +427,15 @@ class SupportBot:
         conn = sqlite3.connect('support_tickets.db')
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
+            VALUES (?, ?, ?, ?, ?, ?, FALSE)
         ''', (active_ticket, user.id, user.username or user.first_name, message_text, message_type, file_id))
+        
+        # Update ticket timestamp
+        cursor.execute('''
+            UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
+        ''', (active_ticket,))
+        
         conn.commit()
         conn.close()
         
@@ -369,6 +475,119 @@ class SupportBot:
         except Exception as e:
             logger.error(f"Error sending admin update: {e}")
 
+    async def reply_to_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle admin reply to ticket"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        ticket_id = int(query.data.split('_')[1])
+        
+        # Get ticket info
+        ticket = self.get_ticket(ticket_id)
+        if not ticket:
+            await query.edit_message_text("❌ Ticket not found.")
+            return
+        
+        context.user_data['replying_to_ticket'] = ticket_id
+        
+        reply_text = f"💬 **Replying to Ticket #{ticket_id}**\n\n"
+        reply_text += f"👤 **User:** {ticket[2]} (@{ticket[2] or 'N/A'})\n"
+        reply_text += f"📝 **Subject:** {ticket[4]}\n\n"
+        reply_text += "Type your reply message (text or photo):"
+        
+        await query.edit_message_text(reply_text, parse_mode=ParseMode.MARKDOWN)
+
+    async def view_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """View full ticket details"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        ticket_id = int(query.data.split('_')[1])
+        
+        # Get ticket details
+        ticket = self.get_ticket(ticket_id)
+        if not ticket:
+            await query.edit_message_text("❌ Ticket not found.")
+            return
+        
+        # Get messages
+        messages = self.get_ticket_messages(ticket_id)
+        
+        # Format ticket details
+        status_emoji = "🟢" if ticket[6] == 'open' else "🔴"
+        ticket_text = f"🎫 **Ticket #{ticket[0]} {status_emoji}**\n\n"
+        ticket_text += f"👤 **User:** {ticket[2]} (@{ticket[2] or 'N/A'})\n"
+        ticket_text += f"📂 **Category:** {ticket[3]}\n"
+        ticket_text += f"📝 **Subject:** {ticket[4]}\n"
+        ticket_text += f"📅 **Created:** {ticket[8]}\n"
+        ticket_text += f"📋 **Status:** {ticket[6].title()}\n\n"
+        ticket_text += f"**📄 Description:**\n{ticket[5]}\n\n"
+        
+        # Add recent messages
+        if messages:
+            ticket_text += "**💬 Recent Messages:**\n"
+            for msg in messages[-5:]:  # Show last 5 messages
+                sender = "🛡️ Admin" if msg[5] else "👤 User"
+                ticket_text += f"{sender}: {msg[2][:100]}{'...' if len(msg[2]) > 100 else ''}\n"
+        
+        # Truncate if too long
+        if len(ticket_text) > 4000:
+            ticket_text = ticket_text[:4000] + "..."
+        
+        keyboard = [
+            [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
+             InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(ticket_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+    async def take_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin takes ownership of ticket"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        ticket_id = int(query.data.split('_')[1])
+        admin_id = query.from_user.id
+        admin_name = query.from_user.first_name
+        
+        # Update ticket assignment
+        conn = sqlite3.connect('support_tickets.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE tickets SET assigned_admin = ?, updated_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        ''', (admin_id, ticket_id))
+        conn.commit()
+        conn.close()
+        
+        await query.answer(f"✅ You have taken ticket #{ticket_id}")
+        
+        # Update the message
+        original_text = query.message.text
+        updated_text = original_text + f"\n\n✅ **Assigned to:** {admin_name}"
+        
+        keyboard = [
+            [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
+             InlineKeyboardButton("👁️ View", callback_data=f"view_{ticket_id}")],
+            [InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(updated_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
     async def dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Admin dashboard"""
         if not self.is_admin(update.effective_user.id):
@@ -407,14 +626,7 @@ class SupportBot:
             status_emoji = "🟢" if ticket[4] == "open" else "🔴"
             dashboard_text += f"{status_emoji} #{ticket[0]} - {ticket[2]} - {ticket[1]} - {ticket[3][:30]}...\n"
         
-        keyboard = [
-            [InlineKeyboardButton("🟢 Open Tickets", callback_data="list_open"),
-             InlineKeyboardButton("🔴 Closed Tickets", callback_data="list_closed")],
-            [InlineKeyboardButton("📈 Statistics", callback_data="stats")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(dashboard_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(dashboard_text, parse_mode=ParseMode.MARKDOWN)
 
     async def my_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user's tickets"""
@@ -450,10 +662,11 @@ class SupportBot:
         query = update.callback_query
         await query.answer()
         
-        ticket_id = int(query.data.split('_')[1])
+        is_admin_close = query.data.startswith('admin_close_')
+        ticket_id = int(query.data.split('_')[-1])
         user_id = update.effective_user.id
         
-        # Verify user owns ticket or is admin
+        # Verify permissions
         conn = sqlite3.connect('support_tickets.db')
         cursor = conn.cursor()
         cursor.execute('SELECT user_id, status FROM tickets WHERE id = ?', (ticket_id,))
@@ -481,8 +694,8 @@ class SupportBot:
         conn.commit()
         conn.close()
         
-        # Clear active ticket from user data
-        if context.user_data.get('active_ticket') == ticket_id:
+        # Clear active ticket from user data if this user closed it
+        if user_id == ticket_owner and context.user_data.get('active_ticket') == ticket_id:
             context.user_data.pop('active_ticket', None)
         
         await query.edit_message_text(f"✅ Ticket #{ticket_id} has been closed successfully.")
@@ -518,8 +731,11 @@ class SupportBot:
         application.add_handler(CommandHandler("dashboard", self.dashboard))
         application.add_handler(CommandHandler("mytickets", self.my_tickets))
         
-        # Callback handlers
+        # Callback handlers for ticket operations
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
+        application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
+        application.add_handler(CallbackQueryHandler(self.view_ticket, pattern=r"^view_\d+"))
+        application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
         
@@ -533,10 +749,15 @@ class SupportBot:
 
 # Configuration
 if __name__ == "__main__":
-    # ⚠️ IMPORTANT: Replace these values with your actual data
-    BOT_TOKEN = os.getenv("BOT_TOKEN")  # Get from @BotFather
-    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))  # Your Telegram User ID
-    ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))  # Your admin group chat ID (negative number)
+    # Get configuration from environment variables
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
+    ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+    
+    if not BOT_TOKEN or not MAIN_ADMIN_ID or not ADMIN_GROUP_ID:
+        print("❌ Missing environment variables!")
+        print("Required: BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID")
+        exit(1)
     
     # Create and run bot
     bot = SupportBot(BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID)
