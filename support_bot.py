@@ -740,7 +740,7 @@ class SupportBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(dashboard_text, reply_markup=reply_markup)
+        await update.message.reply_text(dashboard_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
     async def list_open_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show only open tickets"""
@@ -782,7 +782,7 @@ class SupportBot:
         keyboard = [[InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(tickets_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(tickets_text, reply_markup=reply_markup)
 
     async def list_closed_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show only closed tickets"""
@@ -824,7 +824,7 @@ class SupportBot:
         keyboard = [[InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(tickets_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(tickets_text, reply_markup=reply_markup)
 
     async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show detailed statistics"""
@@ -867,15 +867,70 @@ class SupportBot:
         keyboard = [[InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(stats_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(stats_text, reply_markup=reply_markup)
 
     async def back_to_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Go back to main dashboard"""
         query = update.callback_query
         await query.answer()
         
-        # Re-run dashboard command
-        await self.dashboard(update, context)
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        # Get ticket statistics
+        open_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('open',), fetch_one=True)[0]
+        closed_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('closed',), fetch_one=True)[0]
+        total_tickets = self.execute_query('SELECT COUNT(*) FROM tickets', fetch_one=True)[0]
+        
+        # Get ALL tickets
+        all_tickets = self.execute_query('''
+            SELECT id, username, category, subject, status, created_at 
+            FROM tickets ORDER BY 
+                CASE WHEN status = 'open' THEN 0 ELSE 1 END,
+                created_at DESC
+        ''', fetch_all=True)
+        
+        dashboard_text = f"📊 Admin Dashboard\n\n"
+        dashboard_text += f"🎫 Total Tickets: {total_tickets}\n"
+        dashboard_text += f"🟢 Open: {open_tickets}\n"
+        dashboard_text += f"🔴 Closed: {closed_tickets}\n\n"
+        dashboard_text += "📋 All Tickets:\n"
+        
+        if all_tickets:
+            for ticket in all_tickets:
+                status_emoji = "🟢" if ticket[4] == "open" else "🔴"
+                username = ticket[1] or "Unknown"
+                subject = ticket[3][:25] + "..." if len(ticket[3]) > 25 else ticket[3]
+                
+                # Handle datetime formatting
+                if ticket[5]:
+                    if hasattr(ticket[5], 'strftime'):
+                        created = ticket[5].strftime("%Y-%m-%d %H:%M")
+                    else:
+                        created = ticket[5][:16] if len(str(ticket[5])) > 16 else str(ticket[5])
+                else:
+                    created = "N/A"
+                    
+                dashboard_text += f"{status_emoji} Ticket #{ticket[0]} - {ticket[2]}\n"
+                dashboard_text += f"👤 {username} | 📝 {subject}\n"
+                dashboard_text += f"📅 {created}\n"
+                dashboard_text += f"🔗 /manage_{ticket[0]} (Click to manage)\n\n"
+        else:
+            dashboard_text += "No tickets found.\n"
+        
+        # Truncate if too long
+        if len(dashboard_text) > 4000:
+            dashboard_text = dashboard_text[:3800] + "\n\n... [List truncated - too many tickets]"
+        
+        keyboard = [
+            [InlineKeyboardButton("🟢 Open Only", callback_data="list_open"),
+             InlineKeyboardButton("🔴 Closed Only", callback_data="list_closed")],
+            [InlineKeyboardButton("📈 Statistics", callback_data="stats")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(dashboard_text, reply_markup=reply_markup)
 
     async def manage_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manage specific ticket - triggered by /manage_X command"""
@@ -1045,7 +1100,7 @@ class SupportBot:
         application.add_handler(CommandHandler("mytickets", self.my_tickets))
         
         # Dynamic ticket management commands
-        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+$'), self.manage_ticket))
+        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+), self.manage_ticket))
         
         # Callback handlers for ticket operations
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
