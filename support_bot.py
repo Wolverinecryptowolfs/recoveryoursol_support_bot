@@ -534,9 +534,9 @@ class SupportBot:
 # Configuration
 if __name__ == "__main__":
     # ⚠️ IMPORTANT: Replace these values with your actual data
-    BOT_TOKEN = "8174671615:AAHziOvithgZBpFwjD5d6fULvNZw9y9vlNM"  # Get from @BotFather
-    MAIN_ADMIN_ID = 6410692316  # Your Telegram User ID
-    ADMIN_GROUP_ID = -1003025156611  # Your admin group chat ID (negative number)
+    BOT_TOKEN = os.getenv("BOT_TOKEN")  # Get from @BotFather
+    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))  # Your Telegram User ID
+    ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))  # Your admin group chat ID (negative number)
     
     # Create and run bot
     bot = SupportBot(BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID)
