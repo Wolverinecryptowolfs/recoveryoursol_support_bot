@@ -646,7 +646,219 @@ class SupportBot:
             parse_mode=ParseMode.MARKDOWN
         )
 
-    async def take_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def list_open_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show only open tickets"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        # Get open tickets only
+        open_tickets = self.execute_query('''
+            SELECT id, username, category, subject, created_at 
+            FROM tickets WHERE status = 'open' 
+            ORDER BY created_at DESC
+        ''', fetch_all=True)
+        
+        tickets_text = "🟢 **Open Tickets**\n\n"
+        
+        if open_tickets:
+            for ticket in open_tickets:
+                username = ticket[1] or "Unknown"
+                subject = ticket[3][:30] + "..." if len(ticket[3]) > 30 else ticket[3]
+                
+                # Handle datetime formatting
+                if ticket[4]:
+                    if hasattr(ticket[4], 'strftime'):
+                        created = ticket[4].strftime("%Y-%m-%d %H:%M")
+                    else:
+                        created = str(ticket[4])[:16] if len(str(ticket[4])) > 16 else str(ticket[4])
+                else:
+                    created = "N/A"
+                
+                tickets_text += f"🎫 **#{ticket[0]}** - {ticket[2]}\n"
+                tickets_text += f"👤 {username} | 📝 {subject}\n"
+                tickets_text += f"📅 {created}\n\n"
+        else:
+            tickets_text += "No open tickets found.\n"
+        
+        # Add back button
+        keyboard = [[InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(tickets_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+    async def list_closed_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show only closed tickets"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        # Get closed tickets only
+        closed_tickets = self.execute_query('''
+            SELECT id, username, category, subject, closed_at 
+            FROM tickets WHERE status = 'closed' 
+            ORDER BY closed_at DESC
+        ''', fetch_all=True)
+        
+        tickets_text = "🔴 **Closed Tickets**\n\n"
+        
+        if closed_tickets:
+            for ticket in closed_tickets:
+                username = ticket[1] or "Unknown"
+                subject = ticket[3][:30] + "..." if len(ticket[3]) > 30 else ticket[3]
+                
+                # Handle datetime formatting
+                if ticket[4]:
+                    if hasattr(ticket[4], 'strftime'):
+                        closed = ticket[4].strftime("%Y-%m-%d %H:%M")
+                    else:
+                        closed = str(ticket[4])[:16] if len(str(ticket[4])) > 16 else str(ticket[4])
+                else:
+                    closed = "N/A"
+                
+                tickets_text += f"🎫 **#{ticket[0]}** - {ticket[2]}\n"
+                tickets_text += f"👤 {username} | 📝 {subject}\n"
+                tickets_text += f"🔒 Closed: {closed}\n\n"
+        else:
+            tickets_text += "No closed tickets found.\n"
+        
+        # Add back button
+        keyboard = [[InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(tickets_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+    async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show detailed statistics"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        # Get comprehensive statistics
+        total_tickets = self.execute_query('SELECT COUNT(*) FROM tickets', fetch_one=True)[0]
+        open_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('open',), fetch_one=True)[0]
+        closed_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('closed',), fetch_one=True)[0]
+        
+        # Category statistics
+        category_stats = self.execute_query('''
+            SELECT category, COUNT(*) as count 
+            FROM tickets GROUP BY category 
+            ORDER BY count DESC
+        ''', fetch_all=True)
+        
+        # Today's tickets
+        today_tickets = self.execute_query('''
+            SELECT COUNT(*) FROM tickets 
+            WHERE DATE(created_at) = CURRENT_DATE
+        ''', fetch_one=True)[0]
+        
+        stats_text = "📈 **Detailed Statistics**\n\n"
+        stats_text += f"🎫 **Total Tickets:** {total_tickets}\n"
+        stats_text += f"🟢 **Open:** {open_tickets}\n"
+        stats_text += f"🔴 **Closed:** {closed_tickets}\n"
+        stats_text += f"📅 **Today:** {today_tickets}\n\n"
+        
+        if category_stats:
+            stats_text += "📊 **By Category:**\n"
+            for category, count in category_stats:
+                stats_text += f"• {category}: {count}\n"
+        
+        # Add back button
+        keyboard = [[InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(stats_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+    async def manage_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manage specific ticket - triggered by /manage_X command"""
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Access denied. Admin only.")
+            return
+        
+        # Extract ticket ID from command
+        command_text = update.message.text
+        try:
+            ticket_id = int(command_text.split('_')[1])
+        except (IndexError, ValueError):
+            await update.message.reply_text("❌ Invalid ticket ID.")
+            return
+        
+        # Get ticket details
+        ticket = self.get_ticket(ticket_id)
+        if not ticket:
+            await update.message.reply_text(f"❌ Ticket #{ticket_id} not found.")
+            return
+        
+        # Get all messages for this ticket
+        messages = self.get_ticket_messages(ticket_id)
+        
+        # Format ticket details
+        status_emoji = "🟢" if ticket[6] == 'open' else "🔴"
+        ticket_text = f"🎫 **Ticket #{ticket[0]} {status_emoji}**\n\n"
+        ticket_text += f"👤 **User:** {ticket[2]} (@{ticket[2] or 'N/A'})\n"
+        ticket_text += f"📂 **Category:** {ticket[3]}\n"
+        ticket_text += f"📝 **Subject:** {ticket[4]}\n"
+        ticket_text += f"📋 **Status:** {ticket[6].title()}\n\n"
+        ticket_text += f"**📄 Description:**\n{ticket[5]}\n\n"
+        
+        # Add ALL messages
+        if messages:
+            ticket_text += "**💬 Full Conversation:**\n"
+            for msg in messages:
+                sender = "🛡️ Admin" if msg[5] else "👤 User"
+                timestamp = msg[6]
+                
+                # Handle datetime formatting
+                if hasattr(timestamp, 'strftime'):
+                    time_str = timestamp.strftime("%H:%M")
+                else:
+                    time_str = str(timestamp)[11:16] if len(str(timestamp)) > 16 else str(timestamp)
+                
+                if msg[3] == 'photo':
+                    msg_content = f"[📸 Image] {msg[2] or ''}"
+                else:
+                    msg_content = msg[2] or "[No text]"
+                
+                # Keep messages readable
+                if len(msg_content) > 150:
+                    msg_content = msg_content[:150] + "..."
+                
+                ticket_text += f"{time_str} - {sender}: {msg_content}\n"
+        
+        # Truncate if too long
+        if len(ticket_text) > 4000:
+            ticket_text = ticket_text[:3800] + "\n\n... [Message truncated]"
+        
+        # Create management buttons
+        keyboard = []
+        if ticket[6] == 'open':
+            keyboard.append([
+                InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
+                InlineKeyboardButton("✅ Take", callback_data=f"take_{ticket_id}")
+            ])
+            keyboard.append([InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")])
+        else:
+            keyboard.append([InlineKeyboardButton("📖 View Only", callback_data=f"view_{ticket_id}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(ticket_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        """Go back to main dashboard"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Re-run dashboard command
+        await self.dashboard(update, context)
         """Admin takes ownership of ticket"""
         query = update.callback_query
         await query.answer()
@@ -728,7 +940,8 @@ class SupportBot:
                     
                 dashboard_text += f"{status_emoji} **#{ticket[0]}** - {ticket[2]}\n"
                 dashboard_text += f"👤 {username} | 📝 {subject}\n"
-                dashboard_text += f"📅 {created}\n\n"
+                dashboard_text += f"📅 {created}\n"
+                dashboard_text += f"🔗 /manage_{ticket[0]} (Click to manage)\n\n"
         else:
             dashboard_text += "No tickets found.\n"
         
@@ -842,6 +1055,9 @@ class SupportBot:
         application.add_handler(CommandHandler("dashboard", self.dashboard))
         application.add_handler(CommandHandler("mytickets", self.my_tickets))
         
+        # Dynamic ticket management commands (e.g., /manage_1, /manage_2, etc.)
+        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+
+        
         # Callback handlers for ticket operations
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
         application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
@@ -849,6 +1065,50 @@ class SupportBot:
         application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
+        
+        # Dashboard navigation handlers
+        application.add_handler(CallbackQueryHandler(self.list_open_tickets, pattern=r"^list_open$"))
+        application.add_handler(CallbackQueryHandler(self.list_closed_tickets, pattern=r"^list_closed$"))
+        application.add_handler(CallbackQueryHandler(self.show_statistics, pattern=r"^stats$"))
+        application.add_handler(CallbackQueryHandler(self.back_to_dashboard, pattern=r"^back_dashboard$"))
+        
+        # Message handlers
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        
+        # Start the bot
+        print("🤖 Support Bot is starting...")
+        application.run_polling()
+
+# Configuration
+if __name__ == "__main__":
+    # Get configuration from environment variables
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
+    ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+    
+    if not BOT_TOKEN or not MAIN_ADMIN_ID or not ADMIN_GROUP_ID:
+        print("❌ Missing environment variables!")
+        print("Required: BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID")
+        exit(1)
+    
+    # Create and run bot
+    bot = SupportBot(BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID)
+    bot.run()), self.manage_ticket))
+        
+        # Callback handlers for ticket operations
+        application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
+        application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
+        application.add_handler(CallbackQueryHandler(self.view_ticket, pattern=r"^view_\d+"))
+        application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
+        
+        # Dashboard navigation handlers
+        application.add_handler(CallbackQueryHandler(self.list_open_tickets, pattern=r"^list_open$"))
+        application.add_handler(CallbackQueryHandler(self.list_closed_tickets, pattern=r"^list_closed$"))
+        application.add_handler(CallbackQueryHandler(self.show_statistics, pattern=r"^stats$"))
+        application.add_handler(CallbackQueryHandler(self.back_to_dashboard, pattern=r"^back_dashboard$"))
         
         # Message handlers
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
