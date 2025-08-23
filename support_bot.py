@@ -34,11 +34,13 @@ class SupportBot:
         
     def get_db_connection(self):
         """Get database connection - PostgreSQL or SQLite fallback"""
-        if self.database_url:
+        if self.database_url and self.database_url.startswith('postgresql'):
             # PostgreSQL connection
+            print(f"🐘 Connecting to PostgreSQL...")
             return psycopg2.connect(self.database_url, cursor_factory=RealDictCursor)
         else:
             # SQLite fallback
+            print(f"🗄️ Falling back to SQLite (DATABASE_URL: {self.database_url})")
             return sqlite3.connect('support_tickets.db')
         
     def init_database(self):
@@ -363,21 +365,16 @@ class SupportBot:
         if message_type == 'photo':
             file_id = update.message.photo[-1].file_id
         
-        # Save admin message to database
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        cursor.execute('''
+        # Save admin message to database using execute_query
+        self.execute_query('''
             INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, TRUE)
         ''', (ticket_id, user.id, user.username or user.first_name, message_text, message_type, file_id))
         
         # Update ticket timestamp
-        cursor.execute('''
+        self.execute_query('''
             UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
         ''', (ticket_id,))
-        
-        conn.commit()
-        conn.close()
         
         # Send message to user
         try:
@@ -416,26 +413,18 @@ class SupportBot:
             await update.message.reply_text("❌ Error creating ticket. Please start over with /ticket")
             return
         
-        # Create ticket in database
-        conn = sqlite3.connect('support_tickets.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
+        # Create ticket in database using execute_query
+        ticket_id = self.execute_query('''
             INSERT INTO tickets (user_id, username, category, subject, description, status)
             VALUES (?, ?, ?, ?, ?, 'open')
         ''', (user.id, user.username or user.first_name, category, subject, description))
         
-        ticket_id = cursor.lastrowid
-        
         # Add initial message
-        cursor.execute('''
+        self.execute_query('''
             INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, FALSE)
         ''', (ticket_id, user.id, user.username or user.first_name, description, 
               'photo' if file_id else 'text', file_id))
-        
-        conn.commit()
-        conn.close()
         
         # Clear user data
         context.user_data.clear()
