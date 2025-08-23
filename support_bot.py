@@ -1132,4 +1132,80 @@ if __name__ == "__main__":
     
     # Create and run bot
     bot = SupportBot(BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID)
+    bot.run()), self.manage_ticket))
+        
+        # Callback handlers for ticket operations
+        application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
+        application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
+        application.add_handler(CallbackQueryHandler(self.view_ticket, pattern=r"^view_\d+"))
+        application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
+        
+        # Dashboard navigation handlers
+        application.add_handler(CallbackQueryHandler(self.list_open_tickets, pattern=r"^list_open$"))
+        application.add_handler(CallbackQueryHandler(self.list_closed_tickets, pattern=r"^list_closed$"))
+        application.add_handler(CallbackQueryHandler(self.show_statistics, pattern=r"^stats$"))
+        application.add_handler(CallbackQueryHandler(self.back_to_dashboard, pattern=r"^back_dashboard$"))
+        
+        # Message handlers
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        
+        # Start the bot
+        print("🤖 Support Bot is starting...")
+        application.run_polling()
+
+# Configuration
+if __name__ == "__main__":
+    # Get configuration from environment variables
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
+    ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+    
+    if not BOT_TOKEN or not MAIN_ADMIN_ID or not ADMIN_GROUP_ID:
+        print("❌ Missing environment variables!")
+        print("Required: BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID")
+        exit(1)
+    
+    # Create and run bot
+    bot = SupportBot(BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID)
+    bot.run()), self.manage_ticket))
+        
+        # Callback handlers for ticket operations
+        application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
+        application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
+        application.add_handler(CallbackQueryHandler(self.view_ticket, pattern=r"^view_\d+"))
+        application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
+        
+        # Dashboard navigation handlers
+        application.add_handler(CallbackQueryHandler(self.list_open_tickets, pattern=r"^list_open$"))
+        application.add_handler(CallbackQueryHandler(self.list_closed_tickets, pattern=r"^list_closed$"))
+        application.add_handler(CallbackQueryHandler(self.show_statistics, pattern=r"^stats$"))
+        application.add_handler(CallbackQueryHandler(self.back_to_dashboard, pattern=r"^back_dashboard$"))
+        
+        # Message handlers
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        
+        # Start the bot
+        print("🤖 Support Bot is starting...")
+        application.run_polling()
+
+# Configuration
+if __name__ == "__main__":
+    # Get configuration from environment variables
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
+    ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+    
+    if not BOT_TOKEN or not MAIN_ADMIN_ID or not ADMIN_GROUP_ID:
+        print("❌ Missing environment variables!")
+        print("Required: BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID")
+        exit(1)
+    
+    # Create and run bot
+    bot = SupportBot(BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID)
     bot.run()
