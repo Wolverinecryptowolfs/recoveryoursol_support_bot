@@ -2126,7 +2126,7 @@ class SupportBot:
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
         application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
         application.add_handler(CallbackQueryHandler(self.view_ticket, pattern=r"^view_\d+"))
-        application.add_handler(CallbackHandler(self.take_ticket, pattern=r"^take_\d+"))
+        application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
         
