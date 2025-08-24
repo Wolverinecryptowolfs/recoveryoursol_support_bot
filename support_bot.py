@@ -1181,7 +1181,7 @@ class SupportBot:
         application.add_handler(CommandHandler("mytickets", self.my_tickets))
         
         # Dynamic ticket management commands
-        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+), self.manage_ticket))
+        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+(@\w+)?$'), self.manage_ticket))
         
         # Callback handlers for ticket operations
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
