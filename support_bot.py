@@ -946,7 +946,10 @@ class SupportBot:
         # Extract ticket ID from command
         command_text = update.message.text
         try:
-            ticket_id = int(command_text.split('_')[1])
+            # Handle both /manage_1 and /manage_1@BotName formats
+            command_part = command_text.split()[0]  # Get first part: /manage_1@BotName
+            ticket_part = command_part.split('_')[1]  # Get: 1@BotName
+            ticket_id = int(ticket_part.split('@')[0])  # Get: 1
         except (IndexError, ValueError):
             await update.message.reply_text("❌ Invalid ticket ID.")
             return
