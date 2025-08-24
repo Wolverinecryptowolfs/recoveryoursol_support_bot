@@ -3,10 +3,12 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import os
 from urllib.parse import urlparse
+import shutil
+from pathlib import Path
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, 
@@ -31,8 +33,75 @@ class SupportBot:
         self.main_admin_id = main_admin_id
         self.admin_group_id = admin_group_id
         self.database_url = os.getenv("DATABASE_URL")
+        
+        # NEUE: Photo Storage Setup
+        self.setup_photo_storage()
+        
         self.init_database()
         
+        # NEUE: Start cleanup scheduler
+        self.start_cleanup_scheduler()
+        
+    def setup_photo_storage(self):
+        """Setup local photo storage directories"""
+        self.base_photos_dir = Path("photos")
+        self.tickets_photos_dir = self.base_photos_dir / "tickets"
+        self.thumbnails_dir = self.base_photos_dir / "thumbnails"
+        
+        # Create directories
+        self.base_photos_dir.mkdir(exist_ok=True)
+        self.tickets_photos_dir.mkdir(exist_ok=True)
+        self.thumbnails_dir.mkdir(exist_ok=True)
+        
+        print(f"📁 Photo storage initialized: {self.base_photos_dir.absolute()}")
+
+    def get_photo_storage_path(self, ticket_id: int, user_id: int, is_admin: bool = False):
+        """Generate organized photo storage path"""
+        now = datetime.now()
+        year_month = now.strftime("%Y/%m")
+        
+        # Create year/month directory structure
+        storage_dir = self.tickets_photos_dir / year_month
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename
+        sender_type = "admin" if is_admin else "user"
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        
+        # Count existing photos for this ticket today to avoid conflicts
+        existing_count = len(list(storage_dir.glob(f"ticket_{ticket_id}_{sender_type}_{user_id}_{timestamp[:8]}*")))
+        
+        filename = f"ticket_{ticket_id}_{sender_type}_{user_id}_{timestamp}_{existing_count + 1}.jpg"
+        
+        return storage_dir / filename
+
+    async def save_photo_to_storage(self, context, file_id: str, ticket_id: int, user_id: int, 
+                                   is_admin: bool = False, original_filename: str = None):
+        """Save photo to local storage with organized naming"""
+        try:
+            # Get file from Telegram
+            file = await context.bot.get_file(file_id)
+            
+            # Generate storage path
+            storage_path = self.get_photo_storage_path(ticket_id, user_id, is_admin)
+            
+            # Download and save file
+            await file.download_to_drive(custom_path=storage_path)
+            
+            # Save photo info to database
+            self.execute_query('''
+                INSERT INTO ticket_photos (ticket_id, file_id, file_path, original_filename, 
+                                           uploaded_by, file_size, is_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (ticket_id, file_id, str(storage_path), original_filename or "image.jpg", 
+                  user_id, storage_path.stat().st_size if storage_path.exists() else 0, is_admin))
+            
+            return str(storage_path)
+            
+        except Exception as e:
+            logger.error(f"Error saving photo: {e}")
+            return None
+
     def get_db_connection(self):
         """Get database connection - PostgreSQL or SQLite fallback"""
         if self.database_url and self.database_url.startswith('postgresql'):
@@ -45,7 +114,7 @@ class SupportBot:
             return sqlite3.connect('support_tickets.db')
         
     def init_database(self):
-        """Initialize database - PostgreSQL or SQLite"""
+        """Initialize database with new tables for photos and cleanup"""
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
@@ -101,6 +170,36 @@ class SupportBot:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # NEW TABLES
+            # PostgreSQL - Photo storage table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticket_photos (
+                    id SERIAL PRIMARY KEY,
+                    ticket_id INTEGER NOT NULL,
+                    file_id TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    original_filename TEXT,
+                    file_size INTEGER DEFAULT 0,
+                    uploaded_by BIGINT NOT NULL,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_id) REFERENCES tickets (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Cleanup tracking table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS cleanup_jobs (
+                    id SERIAL PRIMARY KEY,
+                    ticket_id INTEGER NOT NULL,
+                    scheduled_date TIMESTAMP NOT NULL,
+                    executed_date TIMESTAMP,
+                    files_cleaned INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'scheduled',
+                    FOREIGN KEY (ticket_id) REFERENCES tickets (id)
+                )
+            ''')
+            
         else:
             # SQLite table creation (fallback)
             cursor.execute('''
@@ -153,7 +252,35 @@ class SupportBot:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-        
+            # NEW TABLES
+            # SQLite versions
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticket_photos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id INTEGER NOT NULL,
+                    file_id TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    original_filename TEXT,
+                    file_size INTEGER DEFAULT 0,
+                    uploaded_by INTEGER NOT NULL,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_id) REFERENCES tickets (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS cleanup_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id INTEGER NOT NULL,
+                    scheduled_date TIMESTAMP NOT NULL,
+                    executed_date TIMESTAMP,
+                    files_cleaned INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'scheduled',
+                    FOREIGN KEY (ticket_id) REFERENCES tickets (id)
+                )
+            ''')
+
         # Insert default categories
         default_categories = [
             ('General Question', 'General questions and inquiries'),
@@ -191,6 +318,7 @@ class SupportBot:
         # Log database type
         db_type = "PostgreSQL" if self.database_url else "SQLite"
         print(f"🗄️ Database initialized: {db_type}")
+        print("🗄️ Database updated with photo storage and cleanup tables")
 
     def execute_query(self, query: str, params: tuple = (), fetch_one: bool = False, fetch_all: bool = False):
         """Execute database query with proper parameter binding"""
@@ -306,60 +434,91 @@ class SupportBot:
         context.user_data['expecting'] = 'subject'
 
     async def dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Admin dashboard"""
+        """FULL DEEP DASHBOARD - Comprehensive ticket overview"""
         if not self.is_admin(update.effective_user.id):
             await update.message.reply_text("❌ Access denied. Admin only.")
             return
         
-        # Get ticket statistics
+        # Get comprehensive statistics
+        total_tickets = self.execute_query('SELECT COUNT(*) FROM tickets', fetch_one=True)[0]
         open_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('open',), fetch_one=True)[0]
         closed_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('closed',), fetch_one=True)[0]
-        total_tickets = self.execute_query('SELECT COUNT(*) FROM tickets', fetch_one=True)[0]
         
-        # Get ALL tickets
+        # Get tickets with photo counts
         all_tickets = self.execute_query('''
-            SELECT id, username, category, subject, status, created_at 
-            FROM tickets ORDER BY 
-                CASE WHEN status = 'open' THEN 0 ELSE 1 END,
-                created_at DESC
+            SELECT t.id, t.username, t.category, t.subject, t.status, t.created_at, 
+                   t.assigned_admin, t.updated_at,
+                   COUNT(tm.id) as message_count,
+                   COUNT(tp.id) as photo_count
+            FROM tickets t
+            LEFT JOIN ticket_messages tm ON t.id = tm.ticket_id
+            LEFT JOIN ticket_photos tp ON t.id = tp.ticket_id
+            GROUP BY t.id, t.username, t.category, t.subject, t.status, t.created_at, 
+                     t.assigned_admin, t.updated_at
+            ORDER BY 
+                CASE WHEN t.status = 'open' THEN 0 ELSE 1 END,
+                t.updated_at DESC
+            LIMIT 25
         ''', fetch_all=True)
         
-        dashboard_text = f"📊 Admin Dashboard\n\n"
-        dashboard_text += f"🎫 Total Tickets: {total_tickets}\n"
-        dashboard_text += f"🟢 Open: {open_tickets}\n"
-        dashboard_text += f"🔴 Closed: {closed_tickets}\n\n"
-        dashboard_text += "📋 All Tickets:\n"
+        dashboard_text = f"📊 **COMPLETE ADMIN DASHBOARD**\n\n"
+        dashboard_text += f"🎫 **System Overview:**\n"
+        dashboard_text += f"• Total Tickets: {total_tickets}\n"
+        dashboard_text += f"• 🟢 Open: {open_tickets}\n"
+        dashboard_text += f"• 🔴 Closed: {closed_tickets}\n"
+        dashboard_text += f"• 📈 Resolution Rate: {round((closed_tickets/total_tickets*100), 1) if total_tickets > 0 else 0}%\n\n"
+        
+        dashboard_text += "📋 **DETAILED TICKET LIST:**\n"
         
         if all_tickets:
             for ticket in all_tickets:
-                status_emoji = "🟢" if ticket[4] == "open" else "🔴"
-                username = ticket[1] or "Unknown"
-                subject = ticket[3][:25] + "..." if len(ticket[3]) > 25 else ticket[3]
+                (ticket_id, username, category, subject, status, created_at, 
+                 assigned_admin, updated_at, message_count, photo_count) = ticket
                 
-                # Handle datetime formatting
-                if ticket[5]:
-                    if hasattr(ticket[5], 'strftime'):
-                        created = ticket[5].strftime("%Y-%m-%d %H:%M")
+                status_emoji = "🟢" if status == "open" else "🔴"
+                username = username or "Unknown"
+                subject_short = subject[:35] + "..." if len(subject) > 35 else subject
+                
+                # Format dates
+                if created_at:
+                    if hasattr(created_at, 'strftime'):
+                        created_str = created_at.strftime("%m-%d %H:%M")
+                        updated_str = updated_at.strftime("%m-%d %H:%M") if updated_at else "N/A"
                     else:
-                        created = ticket[5][:16] if len(str(ticket[5])) > 16 else str(ticket[5])
+                        created_str = str(created_at)[5:16]
+                        updated_str = str(updated_at)[5:16] if updated_at else "N/A"
                 else:
-                    created = "N/A"
-                    
-                dashboard_text += f"{status_emoji} Ticket #{ticket[0]} - {ticket[2]}\n"
-                dashboard_text += f"👤 {username} | 📝 {subject}\n"
-                dashboard_text += f"📅 {created}\n"
-                dashboard_text += f"🔗 /manage_{ticket[0]} (Click to manage)\n\n"
+                    created_str = updated_str = "N/A"
+                
+                # Admin assignment
+                admin_info = f"👨‍💼 Admin {assigned_admin}" if assigned_admin else "🆓 Unassigned"
+                
+                # Detailed ticket info
+                dashboard_text += f"\n{status_emoji} **TICKET #{ticket_id}** - {category}\n"
+                dashboard_text += f"👤 **User:** {username}\n"
+                dashboard_text += f"📝 **Subject:** {subject_short}\n"
+                dashboard_text += f"💬 **Activity:** {message_count} messages"
+                if photo_count > 0:
+                    dashboard_text += f" | 📸 {photo_count} photos"
+                dashboard_text += f"\n📅 **Created:** {created_str} | **Updated:** {updated_str}\n"
+                dashboard_text += f"🔧 **Status:** {status.upper()} | {admin_info}\n"
+                dashboard_text += f"🔗 **Manage:** /manage_{ticket_id}\n"
+                dashboard_text += "─" * 30 + "\n"
         else:
             dashboard_text += "No tickets found.\n"
         
-        # Truncate if too long
+        # Truncate if too long for Telegram
         if len(dashboard_text) > 4000:
-            dashboard_text = dashboard_text[:3800] + "\n\n... [List truncated - too many tickets]"
+            dashboard_text = dashboard_text[:3800] + "\n\n... [Showing first 25 tickets - use filters for more]"
         
+        # Enhanced navigation buttons
         keyboard = [
             [InlineKeyboardButton("🟢 Open Only", callback_data="list_open"),
              InlineKeyboardButton("🔴 Closed Only", callback_data="list_closed")],
-            [InlineKeyboardButton("📈 Statistics", callback_data="stats")]
+            [InlineKeyboardButton("📈 Statistics", callback_data="detailed_stats"),
+             InlineKeyboardButton("📸 Photo Gallery", callback_data="photo_gallery")],
+            [InlineKeyboardButton("🧹 Cleanup Status", callback_data="cleanup_status"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="refresh_dashboard")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -969,9 +1128,72 @@ class SupportBot:
         else:
             await self.handle_ticket_message(update, context, message_type='photo')
 
+    # Ersetzte create_ticket_final Methode
+    async def create_ticket_final(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                  description: str, file_id: str = None):
+        """Create final ticket with enhanced photo handling"""
+        user = update.effective_user
+        category = context.user_data.get('ticket_category')
+        subject = context.user_data.get('ticket_subject')
+        
+        if not category or not subject:
+            await update.message.reply_text("❌ Error creating ticket. Please start over with /ticket")
+            return
+        
+        # Create ticket in database
+        ticket_id = self.execute_query('''
+            INSERT INTO tickets (user_id, username, category, subject, description, status)
+            VALUES (?, ?, ?, ?, ?, 'open')
+        ''', (user.id, user.username or user.first_name, category, subject, description))
+        
+        # Handle photo if present
+        photo_path = None
+        if file_id:
+            photo_path = await self.save_photo_to_storage(
+                context, file_id, ticket_id, user.id, is_admin=False
+            )
+        
+        # Add initial message
+        self.execute_query('''
+            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
+            VALUES (?, ?, ?, ?, ?, ?, FALSE)
+        ''', (ticket_id, user.id, user.username or user.first_name, description, 
+              'photo' if file_id else 'text', file_id))
+        
+        # Schedule cleanup for this ticket (7 days from closure)
+        # Will be activated when ticket is closed
+        
+        # Clear user data and set active ticket
+        context.user_data.clear()
+        context.user_data['active_ticket'] = ticket_id
+        
+        # Enhanced confirmation message
+        ticket_text = f"✅ **Ticket Created Successfully!**\n\n"
+        ticket_text += f"🎫 **Ticket ID:** #{ticket_id}\n"
+        ticket_text += f"📂 **Category:** {category}\n"
+        ticket_text += f"📝 **Subject:** {subject}\n"
+        ticket_text += f"📋 **Description:** {description}\n"
+        
+        if photo_path:
+            ticket_text += f"📸 **Attachment:** Image saved\n"
+        
+        ticket_text += f"\n💡 **Next Steps:**\n"
+        ticket_text += f"• An admin will respond soon\n"
+        ticket_text += f"• Continue sending messages here\n"
+        ticket_text += f"• Your ticket will auto-cleanup 7 days after closure\n"
+        
+        keyboard = [[InlineKeyboardButton("🔒 Close Ticket", callback_data=f"close_{ticket_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(ticket_text, reply_markup=reply_markup)
+        
+        # Notify admins
+        await self.notify_admins_new_ticket(context, ticket_id, user, category, subject, description, photo_path)
+
+    # Ersetzte handle_admin_reply Methode
     async def handle_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                  message_type: str = 'text'):
-        """Handle admin reply to ticket"""
+        """Handle admin reply with enhanced photo storage"""
         user = update.effective_user
         ticket_id = context.user_data['replying_to_ticket']
         
@@ -983,12 +1205,18 @@ class SupportBot:
             return
         
         ticket_user_id = ticket[1]
-        message_text = update.message.text if message_type == 'text' else update.message.caption or "Image from support"
+        message_text = update.message.text if message_type == 'text' else update.message.caption or "Image from support team"
         file_id = None
+        photo_path = None
+        
         if message_type == 'photo':
             file_id = update.message.photo[-1].file_id
+            # Save admin photo to storage
+            photo_path = await self.save_photo_to_storage(
+                context, file_id, ticket_id, user.id, is_admin=True
+            )
         
-        # Save admin message to database using execute_query
+        # Save admin message to database
         self.execute_query('''
             INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, TRUE)
@@ -999,7 +1227,7 @@ class SupportBot:
             UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
         ''', (ticket_id,))
         
-        # Send message to user
+        # Send enhanced message to user
         try:
             support_text = f"🎫 **Support Team Response (Ticket #{ticket_id})**\n\n{message_text}"
             
@@ -1009,73 +1237,35 @@ class SupportBot:
                     photo=file_id,
                     caption=support_text
                 )
+                await update.message.reply_text(
+                    f"✅ Photo reply sent to user for ticket #{ticket_id}\n"
+                    f"📁 Saved to: {photo_path.name if photo_path else 'storage'}"
+                )
             else:
                 await context.bot.send_message(
                     chat_id=ticket_user_id,
                     text=support_text
                 )
-            
-            await update.message.reply_text(f"✅ Reply sent to user for ticket #{ticket_id}")
+                await update.message.reply_text(f"✅ Reply sent to user for ticket #{ticket_id}")
             
         except Exception as e:
             await update.message.reply_text(f"❌ Failed to send message to user: {str(e)}")
         
         # Clear reply mode
         context.user_data.pop('replying_to_ticket', None)
-
-    async def create_ticket_final(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                                  description: str, file_id: str = None):
-        """Create the final ticket"""
-        user = update.effective_user
-        category = context.user_data.get('ticket_category')
-        subject = context.user_data.get('ticket_subject')
         
-        if not category or not subject:
-            await update.message.reply_text("❌ Error creating ticket. Please start over with /ticket")
-            return
-        
-        # Create ticket in database using execute_query
-        ticket_id = self.execute_query('''
-            INSERT INTO tickets (user_id, username, category, subject, description, status)
-            VALUES (?, ?, ?, ?, ?, 'open')
-        ''', (user.id, user.username or user.first_name, category, subject, description))
-        
-        # Add initial message
-        self.execute_query('''
-            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
-            VALUES (?, ?, ?, ?, ?, ?, FALSE)
-        ''', (ticket_id, user.id, user.username or user.first_name, description, 
-              'photo' if file_id else 'text', file_id))
-        
-        # Clear user data
-        context.user_data.clear()
-        context.user_data['active_ticket'] = ticket_id
-        
-        # Send confirmation to user
-        ticket_text = f"✅ **Ticket Created Successfully!**\n\n"
-        ticket_text += f"🎫 **Ticket ID:** #{ticket_id}\n"
-        ticket_text += f"📂 **Category:** {category}\n"
-        ticket_text += f"📝 **Subject:** {subject}\n"
-        ticket_text += f"📋 **Description:** {description}\n\n"
-        ticket_text += "An admin will respond to you soon. You can continue sending messages here."
-        
-        keyboard = [[InlineKeyboardButton("🔒 Close Ticket", callback_data=f"close_{ticket_id}")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(ticket_text, reply_markup=reply_markup)
-        
-        # Notify admins
-        await self.notify_admins_new_ticket(context, ticket_id, user, category, subject, description)
-
     async def notify_admins_new_ticket(self, context: ContextTypes.DEFAULT_TYPE, 
-                                       ticket_id: int, user, category: str, subject: str, description: str):
-        """Notify admins about new ticket"""
+                                       ticket_id: int, user, category: str, subject: str, description: str, photo_path: str = None):
+        """Notify admins about new ticket, with optional photo path"""
         admin_text = f"🆕 **New Support Ticket**\n\n"
         admin_text += f"🎫 **ID:** #{ticket_id}\n"
         admin_text += f"👤 **User:** {user.first_name} (@{user.username or 'N/A'})\n"
         admin_text += f"📂 **Category:** {category}\n"
         admin_text += f"📝 **Subject:** {subject}\n"
         admin_text += f"📋 **Description:** {description[:200]}{'...' if len(description) > 200 else ''}\n"
+        
+        if photo_path:
+            admin_text += f"📸 **Attachment:** User has attached a photo.\n"
         
         keyboard = [
             [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
@@ -1094,7 +1284,6 @@ class SupportBot:
         except Exception as e:
             logger.error(f"Error sending admin notification: {e}")
 
-    # Ersetzte handle_ticket_message Methode
     async def handle_ticket_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle messages in active tickets"""
         user = update.effective_user
@@ -1139,7 +1328,6 @@ class SupportBot:
             f"An admin will respond to you soon."
         )
 
-    # Neue Methode
     async def notify_admins_ticket_update_with_photo(self, context: ContextTypes.DEFAULT_TYPE, 
                                                      ticket_id: int, user, message: str, file_id: str):
         """Notify admins about ticket updates, including photo"""
@@ -1182,7 +1370,7 @@ class SupportBot:
         except Exception as e:
             logger.error(f"Error sending admin notification: {e}")
 
-    # Alle fehlenden Methoden...
+    # All remaining placeholder methods need implementation - adding basic structure
     async def my_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user's tickets"""
         user = update.effective_user
@@ -1737,9 +1925,20 @@ class SupportBot:
         
         await query.edit_message_text(dashboard_text, reply_markup=reply_markup)
     
-    # Run method mit den neuen Handlern
+    async def refresh_dashboard_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Refresh dashboard from callback"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+            
+        # Call the full dashboard method adapted for callbacks
+        await self.dashboard_callback_version(query, context)
+
     def run(self):
-        """Run the bot"""
+        """Run the bot with all Phase 1 enhancements"""
         application = Application.builder().token(self.token).build()
         
         # Command handlers
@@ -1773,9 +1972,13 @@ class SupportBot:
         # Menu handlers
         application.add_handler(CallbackQueryHandler(self.handle_menu_actions, pattern=r"^menu_"))
         application.add_handler(CallbackQueryHandler(self.show_manual, pattern=r"^show_manual$"))
-        application.add_handler(CallbackQueryHandler(self.stats, pattern=r"^refresh_stats$"))
         application.add_handler(CallbackQueryHandler(self.detailed_stats_callback, pattern=r"^detailed_stats$"))
-        application.add_handler(CallbackQueryHandler(self.full_dashboard_callback, pattern=r"^back_dashboard$"))
+        
+        # PHASE 1: New enhanced handlers
+        application.add_handler(CallbackQueryHandler(self.show_photo_gallery, pattern=r"^photo_gallery$"))
+        application.add_handler(CallbackQueryHandler(self.show_cleanup_status, pattern=r"^cleanup_status$"))
+        application.add_handler(CallbackQueryHandler(self.refresh_dashboard_callback, pattern=r"^refresh_dashboard$"))
+        application.add_handler(CallbackQueryHandler(self.force_cleanup_now, pattern=r"^force_cleanup$"))
         
         # Category and admin management handlers
         application.add_handler(CallbackQueryHandler(self.add_category, pattern=r"^add_category$"))
@@ -1790,20 +1993,9 @@ class SupportBot:
         
         # Start the bot
         print("🤖 Support Bot is starting...")
+        print("📸 Photo storage enabled")
+        print("🧹 Auto-cleanup scheduler active")
+        print("📊 Full dashboard mode enabled")
         application.run_polling()
 
-# Configuration
-if __name__ == "__main__":
-    # Get configuration from environment variables
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
-    ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
-    
-    if not BOT_TOKEN or not MAIN_ADMIN_ID or not ADMIN_GROUP_ID:
-        print("❌ Missing environment variables!")
-        print("Required: BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID")
-        exit(1)
-    
-    # Create and run bot
-    bot = SupportBot(BOT_TOKEN, MAIN_ADMIN_ID, ADMIN_GROUP_ID)
-    bot.run()
+# END OF PHASE 1 TEIL 2
