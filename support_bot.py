@@ -1187,47 +1187,54 @@ class SupportBot:
             logger.error(f"Error sending admin notification: {e}")
 
     async def handle_ticket_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle messages in active tickets - ENHANCED VERSION"""
-        user = update.effective_user
+    """Handle messages in active tickets - ENHANCED VERSION"""
+    user = update.effective_user
+    
+    if update.message.text:
+        message_type = 'text'
+        message_text = update.message.text
+        file_id = None
+    elif update.message.photo:
+        message_type = 'photo'
+        file_id = update.message.photo[-1].file_id
+        message_text = update.message.caption or "📸 User sent an image"
+    else:
+        return
         
-        if update.message.text:
-            message_type = 'text'
-            message_text = update.message.text
-            file_id = None
-        elif update.message.photo:
-            message_type = 'photo'
-            file_id = update.message.photo[-1].file_id
-            message_text = update.message.caption or "📸 User sent an image"
-        else:
-            return
-            
-        active_ticket = self.execute_query('''
-            SELECT id FROM tickets 
-            WHERE user_id = ? AND status = 'open' 
-            ORDER BY updated_at DESC LIMIT 1
-        ''', (user.id,), fetch_one=True)
-        
-        if not active_ticket:
-            return
-        
-        ticket_id = active_ticket[0]
-        
-        photo_path = None
-        if message_type == 'photo' and file_id:
-            photo_path = await self.save_photo_to_storage(
-                context, file_id, ticket_id, user.id, is_admin=False
-            )
-        
-        self.execute_query('''
-            INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
-            VALUES (?, ?, ?, ?, ?, ?, FALSE)
-        ''', (ticket_id, user.id, user.username or user.first_name, message_text, message_type, file_id))
-        
-        self.execute_query('''
-            UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
-        ''', (ticket_id,))
-        
-        await self.notify_admins_ticket_update_enhanced(context, ticket_id, user, message_text, message_type, file_id, photo_path)
+    active_ticket = self.execute_query('''
+        SELECT id FROM tickets 
+        WHERE user_id = ? AND status = 'open' 
+        ORDER BY updated_at DESC LIMIT 1
+    ''', (user.id,), fetch_one=True)
+    
+    if not active_ticket:
+        return
+    
+    ticket_id = active_ticket[0]
+    
+    photo_path = None
+    if message_type == 'photo' and file_id:
+        photo_path = await self.save_photo_to_storage(
+            context, file_id, ticket_id, user.id, is_admin=False
+        )
+    
+    self.execute_query('''
+        INSERT INTO ticket_messages (ticket_id, user_id, username, message, message_type, file_id, is_admin)
+        VALUES (?, ?, ?, ?, ?, ?, FALSE)
+    ''', (ticket_id, user.id, user.username or user.first_name, message_text, message_type, file_id))
+    
+    self.execute_query('''
+        UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    ''', (ticket_id,))
+    
+    await self.notify_admins_ticket_update_enhanced(context, ticket_id, user, message_text, message_type, file_id, photo_path)
+    
+    confirmation = f"✅ Message added to ticket #{ticket_id}"
+    if message_type == 'photo':
+        confirmation += " with image"
+    confirmation += "\nAn admin will respond soon."
+    
+    await update.message.reply_text(confirmation)
         
         confirmation = f"✅ Message added to ticket #{ticket_id}"
         if message_type == 'photo':
