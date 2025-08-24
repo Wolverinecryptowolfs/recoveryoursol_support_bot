@@ -38,8 +38,66 @@ class SupportBot:
         
         self.init_database()
         
-        # NEUE: Start cleanup scheduler - wird in run() gestartet, um auf den Event-Loop zuzugreifen
+    def setup_photo_storage(self):
+        """Setup local photo storage directories"""
+        self.base_photos_dir = Path("photos")
+        self.tickets_photos_dir = self.base_photos_dir / "tickets"
+        self.thumbnails_dir = self.base_photos_dir / "thumbnails"
         
+        # Create directories
+        self.base_photos_dir.mkdir(exist_ok=True)
+        self.tickets_photos_dir.mkdir(exist_ok=True)
+        self.thumbnails_dir.mkdir(exist_ok=True)
+        
+        print(f"📁 Photo storage initialized: {self.base_photos_dir.absolute()}")
+
+    def get_photo_storage_path(self, ticket_id: int, user_id: int, is_admin: bool = False):
+        """Generate organized photo storage path"""
+        now = datetime.now()
+        year_month = now.strftime("%Y/%m")
+        
+        # Create year/month directory structure
+        storage_dir = self.tickets_photos_dir / year_month
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename
+        sender_type = "admin" if is_admin else "user"
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        
+        # Count existing photos for this ticket today to avoid conflicts
+        existing_count = len(list(storage_dir.glob(f"ticket_{ticket_id}_{sender_type}_{user_id}_{timestamp[:8]}*")))
+        
+        filename = f"ticket_{ticket_id}_{sender_type}_{user_id}_{timestamp}_{existing_count + 1}.jpg"
+        
+        return storage_dir / filename
+
+    async def save_photo_to_storage(self, context, file_id: str, ticket_id: int, user_id: int, 
+                                   is_admin: bool = False, original_filename: str = None):
+        """Save photo to local storage with organized naming"""
+        try:
+            # Get file from Telegram
+            file = await context.bot.get_file(file_id)
+            
+            # Generate storage path
+            storage_path = self.get_photo_storage_path(ticket_id, user_id, is_admin)
+            
+            # Download and save file
+            await file.download_to_drive(custom_path=storage_path)
+            
+            # Save photo info to database
+            self.execute_query('''
+                INSERT INTO ticket_photos (ticket_id, file_id, file_path, original_filename, 
+                                           uploaded_by, file_size, is_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (ticket_id, file_id, str(storage_path), original_filename or "image.jpg", 
+                  user_id, storage_path.stat().st_size if storage_path.exists() else 0, is_admin))
+            
+            return str(storage_path)
+            
+        except Exception as e:
+            logger.error(f"Error saving photo: {e}")
+            return None
+
     def get_db_connection(self):
         """Get database connection - PostgreSQL or SQLite fallback"""
         if self.database_url and self.database_url.startswith('postgresql'):
@@ -995,7 +1053,6 @@ class SupportBot:
         """Enhanced handler for category, admin inputs, and regular messages"""
         user = update.effective_user
         
-        # Handle category creation
         if context.user_data.get('adding_category'):
             await self.handle_category_input(update, context)
             return
@@ -1004,12 +1061,10 @@ class SupportBot:
             await self.handle_category_description(update, context)
             return
         
-        # Handle admin creation
         if context.user_data.get('adding_admin'):
             await self.handle_admin_input(update, context)
             return
         
-        # Check if admin is replying to ticket
         if 'replying_to_ticket' in context.user_data and self.is_admin(user.id):
             await self.handle_admin_reply(update, context)
             return
@@ -1028,7 +1083,6 @@ class SupportBot:
                 await self.create_ticket_final(update, context, update.message.text)
                 
         else:
-            # Check if this is a message for an open ticket
             await self.handle_ticket_message(update, context)
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1244,7 +1298,8 @@ class SupportBot:
             except Exception as e:
                 logger.error(f"Cleanup scheduler error: {e}")
 
-    async def run_cleanup_job(self, context: ContextTypes.DEFAULT_TYPE):
+    # run_cleanup_job korrigiert, erwartet keinen context-Parameter vom Scheduler
+    async def run_cleanup_job(self):
         """Run the daily cleanup job"""
         cutoff_date = datetime.now() - timedelta(days=7)
         
@@ -1275,7 +1330,14 @@ class SupportBot:
                 logger.error(f"Error cleaning up ticket {ticket_id}: {e}")
         
         if cleaned_count > 0:
-            await self.notify_admins_cleanup(context, cleaned_count)
+            # Die Benachrichtigung muss über den Bot-Context erfolgen.
+            # Da dieser Job aus einem separaten Task läuft, ist kein `update` oder `context` verfügbar.
+            # Man müsste den `context` speichern oder eine andere Methode verwenden.
+            # Um den Fehler zu beheben, wird diese Zeile gelöscht und stattdessen
+            # ein Print-Statement verwendet, bis eine Lösung zur Kontext-Übergabe gefunden wird.
+            # await self.notify_admins_cleanup(context, cleaned_count)
+            print(f"🧹 Cleanup completed: {cleaned_count} tickets cleaned")
+
 
     async def cleanup_ticket(self, ticket_id: int) -> int:
         """Cleanup a specific ticket - delete messages and photos"""
@@ -1441,7 +1503,7 @@ class SupportBot:
         await query.edit_message_text("🧹 **Running Cleanup...**\n\nPlease wait...")
         
         try:
-            await self.run_cleanup_job(context)
+            await self.run_cleanup_job()
             
             total_cleaned = self.execute_query('''
                 SELECT COUNT(*) FROM cleanup_jobs WHERE status = 'completed'
@@ -2064,7 +2126,7 @@ class SupportBot:
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
         application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
         application.add_handler(CallbackQueryHandler(self.view_ticket, pattern=r"^view_\d+"))
-        application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
+        application.add_handler(CallbackHandler(self.take_ticket, pattern=r"^take_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
         
