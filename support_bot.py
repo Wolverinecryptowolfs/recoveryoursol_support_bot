@@ -571,7 +571,11 @@ class SupportBot:
         reply_text += f"📝 **Subject:** {ticket[4]}\n\n"
         reply_text += "Type your reply message (text or photo):"
         
-        await query.edit_message_text(reply_text, parse_mode=ParseMode.MARKDOWN)
+        # Add back button
+        keyboard = [[InlineKeyboardButton("🔙 Back to Ticket", callback_data=f"back_to_ticket_{ticket_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(reply_text, reply_markup=reply_markup)
 
     async def view_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """View full ticket details"""
@@ -638,15 +642,15 @@ class SupportBot:
         
         keyboard = [
             [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
-             InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")]
+             InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")],
+            [InlineKeyboardButton("🔙 Back to Ticket", callback_data=f"back_to_ticket_{ticket_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await context.bot.send_message(
             chat_id=query.message.chat.id,
             text=ticket_text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
+            reply_markup=reply_markup
         )
 
     async def take_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -670,18 +674,19 @@ class SupportBot:
         
         await query.answer(f"✅ You have taken ticket #{ticket_id}")
         
-        # Update the message
+        # Update the message with assignment info and back button
         original_text = query.message.text
         updated_text = original_text + f"\n\n✅ **Assigned to:** {admin_name}"
         
         keyboard = [
             [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
              InlineKeyboardButton("👁️ View", callback_data=f"view_{ticket_id}")],
-            [InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")]
+            [InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")],
+            [InlineKeyboardButton("🔙 Back to Ticket", callback_data=f"back_to_ticket_{ticket_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(updated_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(updated_text, reply_markup=reply_markup)
 
     async def dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Admin dashboard"""
@@ -941,10 +946,7 @@ class SupportBot:
         # Extract ticket ID from command
         command_text = update.message.text
         try:
-            # Handle both /manage_1 and /manage_1@BotName formats
-            command_part = command_text.split()[0]  # Get first part: /manage_1@BotName
-            ticket_part = command_part.split('_')[1]  # Get: 1@BotName
-            ticket_id = int(ticket_part.split('@')[0])  # Get: 1
+            ticket_id = int(command_text.split('_')[1])
         except (IndexError, ValueError):
             await update.message.reply_text("❌ Invalid ticket ID.")
             return
@@ -1009,6 +1011,82 @@ class SupportBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(ticket_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+    async def back_to_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Go back to specific ticket management"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        # Extract ticket ID from callback data
+        ticket_id = int(query.data.split('_')[-1])
+        
+        # Get ticket details
+        ticket = self.get_ticket(ticket_id)
+        if not ticket:
+            await query.edit_message_text(f"❌ Ticket #{ticket_id} not found.")
+            return
+        
+        # Get all messages
+        messages = self.get_ticket_messages(ticket_id)
+        
+        # Format ticket details (same as manage_ticket)
+        status_emoji = "🟢" if ticket[6] == 'open' else "🔴"
+        ticket_text = f"🎫 Ticket #{ticket[0]} {status_emoji}\n\n"
+        ticket_text += f"👤 User: {ticket[2]} (@{ticket[2] or 'N/A'})\n"
+        ticket_text += f"📂 Category: {ticket[3]}\n"
+        ticket_text += f"📝 Subject: {ticket[4]}\n"
+        ticket_text += f"📋 Status: {ticket[6].title()}\n\n"
+        ticket_text += f"📄 Description:\n{ticket[5]}\n\n"
+        
+        # Add ALL messages
+        if messages:
+            ticket_text += "💬 Full Conversation:\n"
+            for msg in messages:
+                sender = "🛡️ Admin" if msg[5] else "👤 User"
+                timestamp = msg[6]
+                
+                # Handle datetime formatting
+                if hasattr(timestamp, 'strftime'):
+                    time_str = timestamp.strftime("%H:%M")
+                else:
+                    time_str = str(timestamp)[11:16] if len(str(timestamp)) > 16 else str(timestamp)
+                
+                if msg[3] == 'photo':
+                    msg_content = f"[📸 Image] {msg[2] or ''}"
+                else:
+                    msg_content = msg[2] or "[No text]"
+                
+                if len(msg_content) > 150:
+                    msg_content = msg_content[:150] + "..."
+                
+                ticket_text += f"{time_str} - {sender}: {msg_content}\n"
+        
+        # Truncate if too long
+        if len(ticket_text) > 4000:
+            ticket_text = ticket_text[:3800] + "\n\n... [Message truncated]"
+        
+        # Create management buttons
+        keyboard = []
+        if ticket[6] == 'open':
+            keyboard.append([
+                InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
+                InlineKeyboardButton("✅ Take", callback_data=f"take_{ticket_id}")
+            ])
+            keyboard.append([InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")])
+        else:
+            keyboard.append([InlineKeyboardButton("📖 View Only", callback_data=f"view_{ticket_id}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Clear reply mode if active
+        context.user_data.pop('replying_to_ticket', None)
+        
+        await query.edit_message_text(ticket_text, reply_markup=reply_markup)
 
     async def my_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user's tickets"""
@@ -1103,7 +1181,7 @@ class SupportBot:
         application.add_handler(CommandHandler("mytickets", self.my_tickets))
         
         # Dynamic ticket management commands
-        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+(@\w+)?$'), self.manage_ticket))
+        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+), self.manage_ticket))
         
         # Callback handlers for ticket operations
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
@@ -1118,6 +1196,7 @@ class SupportBot:
         application.add_handler(CallbackQueryHandler(self.list_closed_tickets, pattern=r"^list_closed$"))
         application.add_handler(CallbackQueryHandler(self.show_statistics, pattern=r"^stats$"))
         application.add_handler(CallbackQueryHandler(self.back_to_dashboard, pattern=r"^back_dashboard$"))
+        application.add_handler(CallbackQueryHandler(self.back_to_ticket, pattern=r"^back_to_ticket_\d+$"))
         
         # Message handlers
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
