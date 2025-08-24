@@ -10,7 +10,8 @@ from urllib.parse import urlparse
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, 
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    InputMediaPhoto
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
@@ -952,6 +953,7 @@ class SupportBot:
             # Check if this is a message for an open ticket
             await self.handle_ticket_message(update, context)
 
+    # Ersetzte handle_photo Methode
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle photo messages"""
         user = update.effective_user
@@ -1092,12 +1094,11 @@ class SupportBot:
         except Exception as e:
             logger.error(f"Error sending admin notification: {e}")
 
-    async def handle_ticket_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_type: str = 'text'):
+    # Ersetzte handle_ticket_message Methode
+    async def handle_ticket_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle messages in active tickets"""
         user = update.effective_user
-        message_text = update.message.text if message_type == 'text' else update.message.caption or "Image attachment"
         
-        # Get user's active ticket
         active_ticket = self.execute_query('''
             SELECT id FROM tickets 
             WHERE user_id = ? AND status = 'open' 
@@ -1108,9 +1109,15 @@ class SupportBot:
             return  # No active ticket
         
         ticket_id = active_ticket[0]
+        
+        message_type = 'text'
         file_id = None
-        if message_type == 'photo':
+        message_text = update.message.text
+        
+        if update.message.photo:
+            message_type = 'photo'
             file_id = update.message.photo[-1].file_id
+            message_text = update.message.caption or "Image attachment"
         
         # Save message to database
         self.execute_query('''
@@ -1124,7 +1131,7 @@ class SupportBot:
         ''', (ticket_id,))
         
         # Notify admins about the update
-        await self.notify_admins_ticket_update(context, ticket_id, user, message_text)
+        await self.notify_admins_ticket_update_with_photo(context, ticket_id, user, message_text, file_id)
         
         # Send confirmation to user
         await update.message.reply_text(
@@ -1132,9 +1139,10 @@ class SupportBot:
             f"An admin will respond to you soon."
         )
 
-    async def notify_admins_ticket_update(self, context: ContextTypes.DEFAULT_TYPE, 
-                                          ticket_id: int, user, message: str):
-        """Notify admins about ticket updates"""
+    # Neue Methode
+    async def notify_admins_ticket_update_with_photo(self, context: ContextTypes.DEFAULT_TYPE, 
+                                                     ticket_id: int, user, message: str, file_id: str):
+        """Notify admins about ticket updates, including photo"""
         # Get ticket details
         ticket = self.get_ticket(ticket_id)
         if not ticket:
@@ -1147,7 +1155,7 @@ class SupportBot:
         admin_text += f"🎫 **Ticket:** #{ticket_id}\n"
         admin_text += f"👤 **User:** {user.first_name} (@{user.username or 'N/A'})\n"
         admin_text += f"📂 **Category:** {category}\n"
-        admin_text += f"📝 **Subject:** {subject}\n\n"
+        admin_text += f"📝 **Subject:** {subject}\n"
         admin_text += f"💭 **New Message:**\n{message[:300]}{'...' if len(message) > 300 else ''}"
         
         keyboard = [
@@ -1158,15 +1166,23 @@ class SupportBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         try:
-            await context.bot.send_message(
-                chat_id=self.admin_group_id,
-                text=admin_text,
-                reply_markup=reply_markup
-            )
+            if file_id:
+                await context.bot.send_photo(
+                    chat_id=self.admin_group_id,
+                    photo=file_id,
+                    caption=admin_text,
+                    reply_markup=reply_markup
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=self.admin_group_id,
+                    text=admin_text,
+                    reply_markup=reply_markup
+                )
         except Exception as e:
             logger.error(f"Error sending admin notification: {e}")
 
-    # All remaining placeholder methods need implementation - adding basic structure
+    # Alle fehlenden Methoden...
     async def my_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user's tickets"""
         user = update.effective_user
@@ -1586,7 +1602,142 @@ class SupportBot:
         ]
         
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def detailed_stats_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show detailed stats from callback"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        await self.stats_callback_version(query, context)
+
+    async def stats_callback_version(self, query, context):
+        """Show detailed statistics - callback version"""
+        total_tickets = self.execute_query('SELECT COUNT(*) FROM tickets', fetch_one=True)[0]
+        open_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('open',), fetch_one=True)[0]
+        closed_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('closed',), fetch_one=True)[0]
+        
+        today_tickets = self.execute_query('''
+            SELECT COUNT(*) FROM tickets 
+            WHERE DATE(created_at) = CURRENT_DATE
+        ''', fetch_one=True)[0]
+        
+        week_tickets_result = self.execute_query('''
+            SELECT COUNT(*) FROM tickets 
+            WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+        ''', fetch_one=True)
+        
+        week_tickets = week_tickets_result[0] if week_tickets_result and week_tickets_result[0] is not None else 0
+        
+        category_stats = self.execute_query('''
+            SELECT category, COUNT(*) as count, 
+                   COUNT(CASE WHEN status = 'open' THEN 1 END) as open_count,
+                   COUNT(CASE WHEN status = 'closed' THEN 1 END) as closed_count
+            FROM tickets GROUP BY category 
+            ORDER BY count DESC
+        ''', fetch_all=True)
+        
+        active_users = self.execute_query('''
+            SELECT username, COUNT(*) as ticket_count 
+            FROM tickets WHERE username IS NOT NULL
+            GROUP BY username 
+            ORDER BY ticket_count DESC LIMIT 5
+        ''', fetch_all=True)
+        
+        stats_text = f"📈 Detailed Statistics\n\n"
+        stats_text += f"🎫 Overall:\n"
+        stats_text += f"• Total Tickets: {total_tickets}\n"
+        stats_text += f"• Open: {open_tickets}\n"
+        stats_text += f"• Closed: {closed_tickets}\n"
+        stats_text += f"• Success Rate: {round((closed_tickets/total_tickets*100), 1) if total_tickets > 0 else 0}%\n\n"
+        
+        stats_text += f"📅 Recent Activity:\n"
+        stats_text += f"• Today: {today_tickets}\n"
+        stats_text += f"• This Week: {week_tickets}\n\n"
+        
+        if category_stats:
+            stats_text += f"📊 By Category:\n"
+            for category, total_count, open_count, closed_count in category_stats:
+                stats_text += f"• {category}: {total_count} ({open_count} open, {closed_count} closed)\n"
+            stats_text += "\n"
+        
+        if active_users:
+            stats_text += f"👥 Most Active Users:\n"
+            for username, count in active_users:
+                stats_text += f"• {username}: {count} tickets\n"
+        
+        keyboard = [[InlineKeyboardButton("📋 Dashboard", callback_data="back_dashboard")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(stats_text, reply_markup=reply_markup)
+
+    async def full_dashboard_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show full dashboard from callback"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        await self.dashboard_callback_version(query, context)
+
+    async def dashboard_callback_version(self, query, context):
+        """Admin dashboard - callback version"""
+        open_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('open',), fetch_one=True)[0]
+        closed_tickets = self.execute_query('SELECT COUNT(*) FROM tickets WHERE status = ?', ('closed',), fetch_one=True)[0]
+        total_tickets = self.execute_query('SELECT COUNT(*) FROM tickets', fetch_one=True)[0]
+        
+        all_tickets = self.execute_query('''
+            SELECT id, username, category, subject, status, created_at 
+            FROM tickets ORDER BY 
+                CASE WHEN status = 'open' THEN 0 ELSE 1 END,
+                created_at DESC
+        ''', fetch_all=True)
+        
+        dashboard_text = f"📊 Admin Dashboard\n\n"
+        dashboard_text += f"🎫 Total Tickets: {total_tickets}\n"
+        dashboard_text += f"🟢 Open: {open_tickets}\n"
+        dashboard_text += f"🔴 Closed: {closed_tickets}\n\n"
+        dashboard_text += "📋 All Tickets:\n"
+        
+        if all_tickets:
+            for ticket in all_tickets:
+                status_emoji = "🟢" if ticket[4] == "open" else "🔴"
+                username = ticket[1] or "Unknown"
+                subject = ticket[3][:25] + "..." if len(ticket[3]) > 25 else ticket[3]
+                
+                if ticket[5]:
+                    if hasattr(ticket[5], 'strftime'):
+                        created = ticket[5].strftime("%Y-%m-%d %H:%M")
+                    else:
+                        created = ticket[5][:16] if len(str(ticket[5])) > 16 else str(ticket[5])
+                else:
+                    created = "N/A"
+                    
+                dashboard_text += f"{status_emoji} Ticket #{ticket[0]} - {ticket[2]}\n"
+                dashboard_text += f"👤 {username} | 📝 {subject}\n"
+                dashboard_text += f"📅 {created}\n"
+                dashboard_text += f"🔗 /manage_{ticket[0]} (Click to manage)\n\n"
+        else:
+            dashboard_text += "No tickets found.\n"
+        
+        if len(dashboard_text) > 4000:
+            dashboard_text = dashboard_text[:3800] + "\n\n... [List truncated - too many tickets]"
+        
+        keyboard = [
+            [InlineKeyboardButton("🟢 Open Only", callback_data="list_open"),
+             InlineKeyboardButton("🔴 Closed Only", callback_data="list_closed")],
+            [InlineKeyboardButton("📈 Statistics", callback_data="stats")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(dashboard_text, reply_markup=reply_markup)
     
+    # Run method mit den neuen Handlern
     def run(self):
         """Run the bot"""
         application = Application.builder().token(self.token).build()
@@ -1623,7 +1774,8 @@ class SupportBot:
         application.add_handler(CallbackQueryHandler(self.handle_menu_actions, pattern=r"^menu_"))
         application.add_handler(CallbackQueryHandler(self.show_manual, pattern=r"^show_manual$"))
         application.add_handler(CallbackQueryHandler(self.stats, pattern=r"^refresh_stats$"))
-        application.add_handler(CallbackQueryHandler(self.stats, pattern=r"^detailed_stats$"))
+        application.add_handler(CallbackQueryHandler(self.detailed_stats_callback, pattern=r"^detailed_stats$"))
+        application.add_handler(CallbackQueryHandler(self.full_dashboard_callback, pattern=r"^back_dashboard$"))
         
         # Category and admin management handlers
         application.add_handler(CallbackQueryHandler(self.add_category, pattern=r"^add_category$"))
