@@ -745,7 +745,7 @@ class SupportBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(dashboard_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(dashboard_text, reply_markup=reply_markup)
 
     async def list_open_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show only open tickets"""
