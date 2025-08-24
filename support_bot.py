@@ -912,7 +912,6 @@ class SupportBot:
         
         await query.edit_message_text(menu_text, reply_markup=reply_markup)
 
-    # All remaining methods
     async def handle_admin_input_enhanced(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Enhanced handler for category, admin inputs, and regular messages"""
         user = update.effective_user
@@ -1211,9 +1210,382 @@ class SupportBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(tickets_text, reply_markup=reply_markup)
+        
+    async def manage_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /manage_X commands"""
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Access denied. Admin only.")
+            return
+        
+        # Extract ticket ID from command
+        command = update.message.text.split('@')[0]
+        try:
+            ticket_id = int(command.replace('/manage_', ''))
+        except ValueError:
+            await update.message.reply_text("❌ Invalid ticket ID.")
+            return
+            
+        # Get ticket details
+        ticket = self.get_ticket(ticket_id)
+        if not ticket:
+            await update.message.reply_text(f"❌ Ticket #{ticket_id} not found.")
+            return
+        
+        # Show ticket management interface
+        await self.show_ticket_management_interface(update, context, ticket_id, ticket)
 
-    # Add all remaining method implementations here...
-    # (Adding placeholders for now - full implementations would be too long)
+    async def show_ticket_management_interface(self, update, context, ticket_id, ticket):
+        """Show ticket management interface"""
+        ticket_id, user_id, username, category, subject, description, status, assigned_admin, created_at, updated_at = ticket
+        
+        ticket_text = f"🎫 **Ticket #{ticket_id} Management**\n\n"
+        ticket_text += f"👤 **User:** {username or 'Unknown'}\n"
+        ticket_text += f"📂 **Category:** {category}\n"
+        ticket_text += f"📝 **Subject:** {subject}\n"
+        ticket_text += f"🔧 **Status:** {status.title()}\n\n"
+        ticket_text += f"📋 **Description:**\n{description[:200]}{'...' if len(description) > 200 else ''}"
+        
+        keyboard = [
+            [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
+             InlineKeyboardButton("👁️ View Full", callback_data=f"view_{ticket_id}")],
+            [InlineKeyboardButton("✅ Take", callback_data=f"take_{ticket_id}"),
+             InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")],
+            [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(ticket_text, reply_markup=reply_markup)
+
+    async def reply_to_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle reply button"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        ticket_id = int(query.data.split('_')[1])
+        context.user_data['replying_to_ticket'] = ticket_id
+        
+        await query.edit_message_text(
+            f"💬 **Reply Mode Activated**\n\n"
+            f"🎫 Ticket: #{ticket_id}\n\n"
+            f"Send your reply message now (text or photo).\n"
+            f"Your next message will be sent to the user.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancel Reply", callback_data=f"cancel_reply_{ticket_id}")
+            ]])
+        )
+
+    async def view_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """View full ticket details"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        ticket_id = int(query.data.split('_')[1])
+        ticket = self.get_ticket(ticket_id)
+        
+        if not ticket:
+            await query.edit_message_text("❌ Ticket not found.")
+            return
+        
+        # Show full ticket details
+        messages = self.get_ticket_messages(ticket_id)
+        
+        view_text = f"🎫 **Full Ticket #{ticket_id}**\n\n"
+        view_text += f"👤 User: {ticket[2] or 'Unknown'}\n"
+        view_text += f"📂 Category: {ticket[3]}\n"
+        view_text += f"📝 Subject: {ticket[4]}\n"
+        view_text += f"📋 Description: {ticket[5]}\n\n"
+        
+        if messages:
+            view_text += "💬 **Conversation:**\n"
+            for msg in messages[-5:]: # Last 5 messages
+                sender = "🛡️ Admin" if msg[5] else "👤 User"
+                view_text += f"{sender}: {msg[2][:100]}{'...' if len(msg[2]) > 100 else ''}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
+             InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_dashboard")]
+        ]
+        
+        await query.edit_message_text(view_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def take_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Take/assign ticket to admin"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        ticket_id = int(query.data.split('_')[1])
+        admin_id = query.from_user.id
+        admin_name = query.from_user.first_name
+        
+        # Assign ticket to admin
+        self.execute_query('''
+            UPDATE tickets 
+            SET assigned_admin = ?, updated_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        ''', (admin_id, ticket_id))
+        
+        await query.edit_message_text(
+            f"✅ **Ticket #{ticket_id} Assigned**\n\n"
+            f"Assigned to: {admin_name}\n\n"
+            f"You can now reply to the user.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("💬 Reply Now", callback_data=f"reply_{ticket_id}"),
+                InlineKeyboardButton("🔙 Dashboard", callback_data="back_dashboard")
+            ]])
+        )
+
+    async def close_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Close ticket"""
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data.startswith('admin_close_'):
+            if not self.is_admin(query.from_user.id):
+                await query.edit_message_text("❌ Access denied. Admin only.")
+                return
+            ticket_id = int(query.data.split('_')[2])
+        else:
+            ticket_id = int(query.data.split('_')[1])
+        
+        # Close the ticket
+        self.execute_query('''
+            UPDATE tickets 
+            SET status = 'closed', closed_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        ''', (ticket_id,))
+        
+        await query.edit_message_text(
+            f"✅ **Ticket #{ticket_id} Closed**\n\n"
+            f"The ticket has been marked as resolved.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")
+            ]])
+        )
+
+    async def list_open_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List only open tickets"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        open_tickets = self.execute_query('''
+            SELECT id, username, category, subject, created_at 
+            FROM tickets WHERE status = 'open'
+            ORDER BY created_at DESC LIMIT 10
+        ''', fetch_all=True)
+        
+        if not open_tickets:
+            tickets_text = "🟢 **Open Tickets**\n\nNo open tickets! 🎉"
+        else:
+            tickets_text = f"🟢 **Open Tickets** ({len(open_tickets)})\n\n"
+            for ticket in open_tickets:
+                tickets_text += f"🎫 #{ticket[0]} - {ticket[2]}\n"
+                tickets_text += f"👤 {ticket[1] or 'Unknown'} | 📝 {ticket[3][:30]}...\n"
+                tickets_text += f"🔗 /manage_{ticket[0]}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 All Tickets", callback_data="back_dashboard"),
+             InlineKeyboardButton("🔴 Closed", callback_data="list_closed")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="list_open")]
+        ]
+        
+        await query.edit_message_text(tickets_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def list_closed_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List only closed tickets"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        closed_tickets = self.execute_query('''
+            SELECT id, username, category, subject, closed_at 
+            FROM tickets WHERE status = 'closed'
+            ORDER BY closed_at DESC LIMIT 10
+        ''', fetch_all=True)
+        
+        if not closed_tickets:
+            tickets_text = "🔴 **Closed Tickets**\n\nNo closed tickets found."
+        else:
+            tickets_text = f"🔴 **Closed Tickets** ({len(closed_tickets)})\n\n"
+            for ticket in closed_tickets:
+                tickets_text += f"🎫 #{ticket[0]} - {ticket[2]}\n"
+                tickets_text += f"👤 {ticket[1] or 'Unknown'} | 📝 {ticket[3][:30]}...\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 All Tickets", callback_data="back_dashboard"),
+             InlineKeyboardButton("🟢 Open", callback_data="list_open")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="list_closed")]
+        ]
+        
+        await query.edit_message_text(tickets_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show statistics from callback"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        # Redirect to stats method
+        await self.stats_from_menu(query, context)
+
+    async def back_to_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Navigate back to dashboard"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+        
+        context.user_data.clear()
+        await self.dashboard_from_menu(query, context)
+
+    async def back_to_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Navigate back to ticket"""
+        query = update.callback_query
+        await query.answer()
+        
+        ticket_id = int(query.data.split('_')[-1])
+        context.user_data.pop('replying_to_ticket', None)
+        
+        # Show ticket details again
+        ticket = self.get_ticket(ticket_id)
+        if ticket:
+            await self.show_ticket_management_interface_callback(query, context, ticket_id, ticket)
+
+    async def show_ticket_management_interface_callback(self, query, context, ticket_id, ticket):
+        """Show ticket management via callback"""
+        ticket_text = f"🎫 **Ticket #{ticket_id}**\n\n"
+        ticket_text += f"👤 User: {ticket[2] or 'Unknown'}\n"
+        ticket_text += f"📂 Category: {ticket[3]}\n"
+        ticket_text += f"📝 Subject: {ticket[4]}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
+             InlineKeyboardButton("👁️ View", callback_data=f"view_{ticket_id}")],
+            [InlineKeyboardButton("✅ Take", callback_data=f"take_{ticket_id}"),
+             InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")],
+            [InlineKeyboardButton("🔙 Dashboard", callback_data="back_dashboard")]
+        ]
+        
+        await query.edit_message_text(ticket_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def cancel_operation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel current operation"""
+        query = update.callback_query
+        await query.answer()
+        
+        context.user_data.clear()
+        
+        await query.edit_message_text(
+            "❌ **Operation Cancelled**\n\nNo changes made.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back", callback_data="back_dashboard")
+            ]])
+        )
+
+    # Menu helper methods für categories und admins
+    async def list_open_tickets_from_menu(self, query, context):
+        """Show open tickets from menu"""
+        open_tickets = self.execute_query('''
+            SELECT id, username, category, subject 
+            FROM tickets WHERE status = 'open'
+            ORDER BY created_at DESC LIMIT 5
+        ''', fetch_all=True)
+        
+        if not open_tickets:
+            text = "🟢 Open Tickets (0)\n\nNo open tickets! 🎉"
+        else:
+            text = f"🟢 Open Tickets ({len(open_tickets)})\n\n"
+            for ticket in open_tickets:
+                text += f"🎫 #{ticket[0]} - {ticket[2]}\n"
+                text += f"👤 {ticket[1] or 'Unknown'}\n"
+                text += f"🔗 /manage_{ticket[0]}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Full Dashboard", callback_data="menu_dashboard")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_refresh")]
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def list_closed_tickets_from_menu(self, query, context):
+        """Show closed tickets from menu"""
+        closed_tickets = self.execute_query('''
+            SELECT id, username, category, subject 
+            FROM tickets WHERE status = 'closed'
+            ORDER BY closed_at DESC LIMIT 5
+        ''', fetch_all=True)
+        
+        if not closed_tickets:
+            text = "🔴 Closed Tickets (0)\n\nNo closed tickets yet."
+        else:
+            text = f"🔴 Recent Closed Tickets ({len(closed_tickets)})\n\n"
+            for ticket in closed_tickets:
+                text += f"🎫 #{ticket[0]} - {ticket[2]}\n"
+                text += f"👤 {ticket[1] or 'Unknown'}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Full Dashboard", callback_data="menu_dashboard")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_refresh")]
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def categories_from_menu(self, query, context):
+        """Show categories from menu"""
+        categories = self.execute_query('SELECT name, description FROM categories ORDER BY name', fetch_all=True)
+        
+        text = "📂 Category Management\n\n"
+        text += "Current Categories:\n"
+        for name, desc in categories:
+            text += f"• {name}\n  {desc}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Add Category", callback_data="add_category")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_refresh")]
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def admins_management_from_menu(self, query, context):
+        """Show admins from menu"""
+        admins = self.execute_query('SELECT user_id, username, role FROM admins ORDER BY role', fetch_all=True)
+        
+        text = "👥 Admin Management\n\n"
+        text += "Current Admins:\n"
+        for user_id, username, role in admins:
+            role_emoji = "👑" if role == "main_admin" else "🛡️"
+            text += f"{role_emoji} {username or f'ID:{user_id}'} ({role})\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_refresh")]
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     
     def run(self):
         """Run the bot"""
@@ -1229,12 +1601,36 @@ class SupportBot:
         application.add_handler(CommandHandler("admins", self.admins_management))
         application.add_handler(CommandHandler("menu", self.setup_admin_menu))
         
-        # Callback handlers
+        # Dynamic ticket management commands
+        application.add_handler(MessageHandler(filters.Regex(r'^/manage_\d+(@\w+)?'), self.manage_ticket))
+        
+        # Callback handlers for ticket operations
         application.add_handler(CallbackQueryHandler(self.category_selected, pattern=r"^cat_"))
+        application.add_handler(CallbackQueryHandler(self.reply_to_ticket, pattern=r"^reply_\d+"))
+        application.add_handler(CallbackQueryHandler(self.view_ticket, pattern=r"^view_\d+"))
+        application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
+        application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
+        
+        # Dashboard navigation handlers
+        application.add_handler(CallbackQueryHandler(self.list_open_tickets, pattern=r"^list_open$"))
+        application.add_handler(CallbackQueryHandler(self.list_closed_tickets, pattern=r"^list_closed$"))
+        application.add_handler(CallbackQueryHandler(self.show_statistics, pattern=r"^stats$"))
+        application.add_handler(CallbackQueryHandler(self.back_to_dashboard, pattern=r"^back_dashboard$"))
+        application.add_handler(CallbackQueryHandler(self.back_to_ticket, pattern=r"^back_to_ticket_\d+$"))
+        
+        # Menu handlers
         application.add_handler(CallbackQueryHandler(self.handle_menu_actions, pattern=r"^menu_"))
+        application.add_handler(CallbackQueryHandler(self.show_manual, pattern=r"^show_manual$"))
+        application.add_handler(CallbackQueryHandler(self.stats, pattern=r"^refresh_stats$"))
+        application.add_handler(CallbackQueryHandler(self.stats, pattern=r"^detailed_stats$"))
+        
+        # Category and admin management handlers
         application.add_handler(CallbackQueryHandler(self.add_category, pattern=r"^add_category$"))
         application.add_handler(CallbackQueryHandler(self.add_admin, pattern=r"^add_admin$"))
-        application.add_handler(CallbackQueryHandler(self.show_manual, pattern=r"^show_manual$"))
+        
+        # Cancel handlers
+        application.add_handler(CallbackQueryHandler(self.cancel_operation, pattern=r"^cancel_"))
         
         # Message handlers
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_admin_input_enhanced))
