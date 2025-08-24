@@ -1186,7 +1186,7 @@ class SupportBot:
         except Exception as e:
             logger.error(f"Error sending admin notification: {e}")
 
-async def handle_ticket_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def handle_ticket_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle messages in active tickets - ENHANCED VERSION"""
         user = update.effective_user
         
