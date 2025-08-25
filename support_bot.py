@@ -1714,7 +1714,7 @@ class SupportBot:
                     photo_buttons.append(
                         InlineKeyboardButton(
                             f"📸 Photo {photo_counter} ({sender_name})", 
-                            callback_data=f"show_photo_{ticket_id}_{file_id}"
+                            callback_data=f"show_photo_{ticket_id}_{msg_id}"
                         )
                     )
                     photo_counter += 1
@@ -1749,10 +1749,21 @@ class SupportBot:
             await query.edit_message_text("❌ Access denied. Admin only.")
             return
     
-        # Parse callback data: show_photo_{ticket_id}_{file_id}
+        # Parse callback data: show_photo_{ticket_id}_{message_id}
         parts = query.data.split('_')
         ticket_id = parts[2]
-        file_id = '_'.join(parts[3:])  # file_id might contain underscores
+        message_id = parts[3]
+
+        # file_id aus Datenbank holen
+        result = self.execute_query('''
+            SELECT file_id FROM ticket_messages WHERE id = ?
+        ''', (message_id,), fetch_one=True)
+
+        if not result:
+            await query.answer("Photo not found in database", show_alert=True)
+            return
+
+        file_id = result[0]
     
         try:
             # Send photo DIRECTLY IN ADMIN CHAT (not private)
