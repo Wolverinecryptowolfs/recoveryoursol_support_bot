@@ -1658,7 +1658,7 @@ class SupportBot:
         )
 
     async def view_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """View full ticket details"""
+        """View full ticket details with photo support - ALL IN ADMIN CHAT"""
         query = update.callback_query
         await query.answer()
         
@@ -1672,28 +1672,103 @@ class SupportBot:
         if not ticket:
             await query.edit_message_text("❌ Ticket not found.")
             return
-        
-        messages = self.get_ticket_messages(ticket_id)
-        
+        # Get ALL messages with proper structure for photo support
+        messages = self.execute_query('''
+            SELECT id, user_id, username, message, message_type, file_id, is_admin, timestamp
+            FROM ticket_messages 
+            WHERE ticket_id = ? 
+            ORDER BY timestamp ASC
+        ''', (ticket_id,), fetch_all=True)
+
         view_text = f"🎫 **Full Ticket #{ticket_id}**\n\n"
         view_text += f"👤 User: {ticket[2] or 'Unknown'}\n"
         view_text += f"📂 Category: {ticket[3]}\n"
         view_text += f"📝 Subject: {ticket[4]}\n"
         view_text += f"📋 Description: {ticket[5]}\n\n"
-        
+
+        # Build keyboard for photo buttons
+        keyboard = []
+        photo_buttons = []
+
         if messages:
-            view_text += "💬 **Conversation:**\n"
-            for msg in messages[-5:]:
+            view_text += "💬 **Complete Conversation:**\n"
+            photo_counter = 1
+
+            for msg in messages:
+                msg_id, user_id, username, message, message_type, file_id, is_admin, timestamp = msg
                 sender = "🛡️ Admin" if msg[5] else "👤 User"
-                view_text += f"{sender}: {msg[2][:100]}{'...' if len(msg[2]) > 100 else ''}\n"
-        
-        keyboard = [
+                sender_name = username or f"ID:{user_id}"
+
+                # Format timestamp
+                if hasattr(timestamp, 'strftime'):
+                    time_str = timestamp.strftime("%m-%d %H:%M")
+                else:
+                    time_str = str(timestamp)[5:16] if len(str(timestamp)) > 16 else str(timestamp)
+
+                if message_type == 'photo':
+                    # Show photo info and add button
+                    view_text += f"📸 {sender} ({time_str}): Sent a photo\n"
+                    view_text += f"    Caption: {message}\n\n"
+                
+                    # Create photo button
+                    photo_buttons.append(
+                        InlineKeyboardButton(
+                            f"📸 Photo {photo_counter} ({sender_name})", 
+                            callback_data=f"show_photo_{ticket_id}_{file_id}"
+                        )
+                    )
+                    photo_counter += 1
+                else:
+                    # Show text message
+                    message_preview = message[:150] + "..." if len(message) > 150 else message
+                    view_text += f"💭 {sender} ({time_str}):\n    {message_preview}\n\n"
+    
+        # Add photo buttons in rows of 2
+        if photo_buttons:
+            view_text += f"📸 **{len(photo_buttons)} Photos Available:**\n\n"
+            for i in range(0, len(photo_buttons), 2):
+                row = photo_buttons[i:i+2]
+                keyboard.append(row)
+    
+        # Add main action buttons
+        keyboard.extend([
             [InlineKeyboardButton("💬 Reply", callback_data=f"reply_{ticket_id}"),
              InlineKeyboardButton("🔒 Close", callback_data=f"admin_close_{ticket_id}")],
-            [InlineKeyboardButton("🔙 Back", callback_data="back_dashboard")]
-        ]
+            [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_dashboard")]
+        ])
+    
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(view_text, reply_markup=reply_markup)
+
+    async def show_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show photo in admin chat - NO PRIVATE MESSAGES"""
+        query = update.callback_query
+        await query.answer()
+    
+        if not self.is_admin(query.from_user.id):
+            await query.edit_message_text("❌ Access denied. Admin only.")
+            return
+    
+        # Parse callback data: show_photo_{ticket_id}_{file_id}
+        parts = query.data.split('_')
+        ticket_id = parts[2]
+        file_id = '_'.join(parts[3:])  # file_id might contain underscores
+    
+        try:
+            # Send photo DIRECTLY IN ADMIN CHAT (not private)
+            await context.bot.send_photo(
+                chat_id=self.admin_group_id,  # YOUR ADMIN GROUP CHAT
+                photo=file_id,
+                caption=f"📸 **Photo from Ticket #{ticket_id}**\n\nRequested by: {query.from_user.first_name}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎫 Back to Ticket", callback_data=f"view_{ticket_id}")
+                ]])
+           )
         
-        await query.edit_message_text(view_text, reply_markup=InlineKeyboardMarkup(keyboard))
+           await query.answer("Photo displayed in admin chat")
+        
+        except Exception as e:
+            await query.answer(f"Failed to load photo: {str(e)}", show_alert=True)
 
     async def take_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Take/assign ticket to admin"""
@@ -2147,7 +2222,8 @@ class SupportBot:
         application.add_handler(CallbackQueryHandler(self.show_cleanup_status, pattern=r"^cleanup_status$"))
         application.add_handler(CallbackQueryHandler(self.refresh_dashboard_callback, pattern=r"^refresh_dashboard$"))
         application.add_handler(CallbackQueryHandler(self.force_cleanup_now, pattern=r"^force_cleanup$"))
-        
+        application.add_handler(CallbackQueryHandler(self.show_photo, pattern=r"^show_photo_"))
+
         # Category and admin management handlers
         application.add_handler(CallbackQueryHandler(self.add_category, pattern=r"^add_category$"))
         application.add_handler(CallbackQueryHandler(self.add_admin, pattern=r"^add_admin$"))
