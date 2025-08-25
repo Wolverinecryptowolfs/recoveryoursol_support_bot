@@ -1835,7 +1835,7 @@ class SupportBot:
             return
         
         context.user_data.clear()
-        await self.dashboard_from_menu(query, context)
+        await self.dashboard_callback_version(query, context)
 
     async def back_to_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Navigate back to ticket"""
