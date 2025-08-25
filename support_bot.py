@@ -1142,7 +1142,7 @@ class SupportBot:
                 )
                 await update.message.reply_text(
                     f"✅ Photo reply sent to user for ticket #{ticket_id}\n"
-                    f"📁 Saved to: {photo_path.name if photo_path else 'storage'}"
+                    f"📁 Saved to: {Path(photo_path).name if photo_path else 'storage'}"
                 )
             else:
                 await context.bot.send_message(
