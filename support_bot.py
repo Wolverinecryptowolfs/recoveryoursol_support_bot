@@ -1765,7 +1765,7 @@ class SupportBot:
                 ]])
            )
         
-           await query.answer("Photo displayed in admin chat")
+            await query.answer("Photo displayed in admin chat")
         
         except Exception as e:
             await query.answer(f"Failed to load photo: {str(e)}", show_alert=True)
