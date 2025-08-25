@@ -1865,6 +1865,7 @@ class SupportBot:
             [InlineKeyboardButton("📊 All Tickets", callback_data="back_dashboard"),
              InlineKeyboardButton("🔴 Closed", callback_data="list_closed")],
             [InlineKeyboardButton("🔄 Refresh", callback_data="list_open")]
+            [InlineKeyboardButton("Back to Menu", callback_data="menu_refresh")]
         ]
         
         await query.edit_message_text(tickets_text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1896,6 +1897,7 @@ class SupportBot:
             [InlineKeyboardButton("📊 All Tickets", callback_data="back_dashboard"),
              InlineKeyboardButton("🟢 Open", callback_data="list_open")],
             [InlineKeyboardButton("🔄 Refresh", callback_data="list_closed")]
+            [InlineKeyboardButton("Back to Menu", callback_data="menu_refresh")]
         ]
         
         await query.edit_message_text(tickets_text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -2112,7 +2114,10 @@ class SupportBot:
             for username, count in active_users:
                 stats_text += f"• {username}: {count} tickets\n"
         
-        keyboard = [[InlineKeyboardButton("📋 Dashboard", callback_data="back_dashboard")]]
+        keyboard = [
+            [InlineKeyboardButton("📋 Dashboard", callback_data="back_dashboard")],
+            [InlineKeyboardButton("Back to Menu", callback_data="menu_refresh")]
+        ] 
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(stats_text, reply_markup=reply_markup)
@@ -2174,7 +2179,8 @@ class SupportBot:
         keyboard = [
             [InlineKeyboardButton("🟢 Open Only", callback_data="list_open"),
              InlineKeyboardButton("🔴 Closed Only", callback_data="list_closed")],
-            [InlineKeyboardButton("📈 Statistics", callback_data="stats")]
+            [InlineKeyboardButton("📈 Statistics", callback_data="stats")],
+            [InlineKeyboardButton("Back to Menu", callback_data="menu_refresh")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
