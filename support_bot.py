@@ -373,18 +373,18 @@ class SupportBot:
             welcome_text += "/stats - View statistics\n"
             welcome_text += "/menu - Admin control panel\n"
 
-        # Admin gets text response only
-        await update.message.reply_text(welcome_text)
-    else:
-        # Regular users get persistent keyboard buttons
-        keyboard = [
-            [KeyboardButton("🎫 Create New Ticket")],
-            [KeyboardButton("📋 My Tickets"), KeyboardButton("🔒 Close Ticket")],
-            [KeyboardButton("ℹ️ Help")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+            # Admin gets text response only
+            await update.message.reply_text(welcome_text)
+        else:
+            # Regular users get persistent keyboard buttons
+            keyboard = [
+                [KeyboardButton("🎫 Create New Ticket")],
+                [KeyboardButton("📋 My Tickets"), KeyboardButton("🔒 Close Ticket")],
+                [KeyboardButton("ℹ️ Help")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
         
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+            await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
     async def show_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show help information"""
