@@ -382,7 +382,7 @@ class SupportBot:
                 [KeyboardButton("📋 My Tickets"), KeyboardButton("🔒 Close Ticket")],
                 [KeyboardButton("ℹ️ Help")]
             ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
             await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
