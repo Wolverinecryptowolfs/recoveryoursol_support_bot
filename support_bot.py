@@ -1195,6 +1195,10 @@ class SupportBot:
     async def handle_admin_input_enhanced(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Enhanced handler for category, admin inputs, and regular messages"""
         user = update.effective_user
+
+        # IGNORE KEYBOARD BUTTON TEXT - ADD THIS CHECK
+        if update.message.text in ["🎫 Create New Ticket", "📋 My Tickets", "🔒 Close Ticket", "ℹ️ Help"]:
+            return  # Let the specific button handlers handle these
         
         if context.user_data.get('adding_category'):
             await self.handle_category_input(update, context)
