@@ -412,6 +412,46 @@ class SupportBot:
         
         context.user_data['expecting'] = 'subject'
 
+    async def create_ticket_final(self, update: Update, context: ContextTypes.DEFAULT_TYPE, description: str, file_id: str = None):
+        """Create the final ticket with all information"""
+        user = update.effective_user
+        category = context.user_data.get('ticket_category')
+        subject = context.user_data.get('ticket_subject')
+    
+        if not category or not subject:
+            await update.message.reply_text("Error: Missing ticket information. Please start over with /ticket")
+            context.user_data.clear()
+            return
+    
+        # Create ticket in database
+        ticket_id = self.execute_query('''
+            INSERT INTO tickets (user_id, username, category, subject, description, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)
+        ''', (user.id, user.username or user.first_name, category, subject, description))
+    
+        # Save photo if provided
+        photo_path = None
+        if file_id:
+            photo_path = await self.save_photo_to_storage(
+                context, file_id, ticket_id, user.id, is_admin=False
+            )
+    
+        # Confirmation to user
+        await update.message.reply_text(
+            f"✅ **Ticket Created Successfully!**\n\n"
+            f"🎫 **Ticket ID:** #{ticket_id}\n"
+            f"📂 **Category:** {category}\n"
+            f"📝 **Subject:** {subject}\n"
+            f"📋 **Description:** {description[:100]}{'...' if len(description) > 100 else ''}\n\n"
+            f"An admin will respond soon. You can view your tickets with /mytickets"
+        )
+    
+        # Notify admins
+        await self.notify_admins_new_ticket(context, ticket_id, user, category, subject, description, photo_path)
+    
+        # Clear context
+        context.user_data.clear()
+
     async def dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """FULL DEEP DASHBOARD - Comprehensive ticket overview"""
         if not self.is_admin(update.effective_user.id):
