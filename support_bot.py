@@ -366,16 +366,119 @@ class SupportBot:
         
         welcome_text = f"👋 Welcome to Support, {user.first_name}!\n\n"
         welcome_text += "I'm here to help you with any questions or issues you might have.\n\n"
-        welcome_text += "🎫 To create a new support ticket, use /ticket\n"
-        welcome_text += "📋 To view your tickets, use /mytickets\n\n"
         
         if self.is_admin(user.id):
             welcome_text += "🔧 **Admin Commands:**\n"
             welcome_text += "/dashboard - View all tickets\n"
             welcome_text += "/stats - View statistics\n"
             welcome_text += "/menu - Admin control panel\n"
-        
+
+        # Admin gets text response only
         await update.message.reply_text(welcome_text)
+    else:
+        # Regular users get persistent keyboard buttons
+        keyboard = [
+            [KeyboardButton("🎫 Create New Ticket")],
+            [KeyboardButton("📋 My Tickets"), KeyboardButton("🔒 Close Ticket")],
+            [KeyboardButton("ℹ️ Help")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+        
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+
+    async def show_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show help information"""
+        help_text = "ℹ️ **Support Bot Help**\n\n"
+        help_text += "🎫 **Create New Ticket** - Report issues or ask questions\n"
+        help_text += "📋 **My Tickets** - View your support tickets\n"
+        help_text += "🔒 **Close Ticket** - Close resolved tickets\n"
+        help_text += "ℹ️ **Help** - Show this help message\n\n"
+        help_text += "You can also use commands:\n"
+        help_text += "• /ticket - Create new ticket\n"
+        help_text += "• /mytickets - View your tickets\n"
+        help_text += "• /start - Show main menu"
+    
+        await update.message.reply_text(help_text)
+
+    async def user_close_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Allow users to close their own tickets"""
+        user = update.effective_user
+    
+        # Find user's open tickets
+        open_tickets = self.execute_query('''
+            SELECT id, category, subject, created_at
+            FROM tickets WHERE user_id = ? AND status = 'open'
+            ORDER BY created_at DESC
+        ''', (user.id,), fetch_all=True)
+    
+        if not open_tickets:
+            await update.message.reply_text(
+                "You don't have any open tickets to close.\n\n"
+                "Use '🎫 Create New Ticket' if you need help with something new."
+            )
+            return
+    
+        # Show buttons for each open ticket
+        keyboard = []
+        for ticket in open_tickets:
+            ticket_id, category, subject, created_at = ticket
+            if hasattr(created_at, 'strftime'):
+                date_str = created_at.strftime("%m-%d")
+            else:
+                date_str = str(created_at)[5:10] if len(str(created_at)) > 10 else str(created_at)
+        
+            button_text = f"#{ticket_id} - {subject[:25]}{'...' if len(subject) > 25 else ''}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"user_close_{ticket_id}")])
+    
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_close")])
+    
+        await update.message.reply_text(
+            "🔒 **Close Ticket**\n\n"
+            "Select which ticket you want to close:\n"
+            "(Only close tickets when your issue is fully resolved)",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_user_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle user closing their own ticket"""
+        query = update.callback_query
+        await query.answer()
+    
+        ticket_id = int(query.data.split('_')[2])
+        user = query.from_user
+    
+        # Verify ticket belongs to user
+        ticket = self.execute_query('''
+            SELECT user_id, subject FROM tickets WHERE id = ? AND status = 'open'
+        ''', (ticket_id,), fetch_one=True)
+    
+        if not ticket or ticket[0] != user.id:
+            await query.edit_message_text("❌ Ticket not found or already closed.")
+            return
+    
+        # Close the ticket
+        self.execute_query('''
+            UPDATE tickets SET status = 'closed', closed_at = CURRENT_TIMESTAMP WHERE id = ?
+        ''', (ticket_id,))
+    
+        await query.edit_message_text(
+            f"✅ **Ticket #{ticket_id} Closed**\n\n"
+            f"Subject: {ticket[1]}\n\n"
+            f"Thank you for using our support system!"
+        )
+    
+        # Notify admins
+        try:
+           await context.bot.send_message(
+               chat_id=self.admin_group_id,
+               text=f"🔒 **Ticket Closed by User**\n\n"
+                    f"🎫 Ticket #{ticket_id}\n"
+                    f"👤 User: {user.first_name} (@{user.username or 'N/A'})\n"
+                    f"📝 Subject: {ticket[1]}\n\n"
+                    f"User marked this ticket as resolved."
+            )
+        except Exception as e:
+            logger.error(f"Error notifying admins of user ticket closure: {e}")
 
     async def create_ticket(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start ticket creation process"""
@@ -2261,6 +2364,7 @@ class SupportBot:
         application.add_handler(CallbackQueryHandler(self.take_ticket, pattern=r"^take_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^close_\d+"))
         application.add_handler(CallbackQueryHandler(self.close_ticket, pattern=r"^admin_close_\d+"))
+        application.add_handler(CallbackQueryHandler(self.handle_user_close, pattern=r"^user_close_\d+$"))
         
         # Dashboard navigation handlers
         application.add_handler(CallbackQueryHandler(self.list_open_tickets, pattern=r"^list_open$"))
@@ -2291,6 +2395,10 @@ class SupportBot:
         # Message handlers
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_admin_input_enhanced))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        application.add_handler(MessageHandler(filters.Regex("^🎫 Create New Ticket$"), self.create_ticket))
+        application.add_handler(MessageHandler(filters.Regex("^📋 My Tickets$"), self.my_tickets))
+        application.add_handler(MessageHandler(filters.Regex("^ℹ️ Help$"), self.show_help))
+        application.add_handler(MessageHandler(filters.Regex("^🔒 Close Ticket$"), self.user_close_ticket))
         
         # Start the bot
         print("🤖 Support Bot is starting...")
