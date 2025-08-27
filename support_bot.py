@@ -1867,7 +1867,7 @@ class SupportBot:
                     photo_counter += 1
                 else:
                     # Show text message
-                    message_preview = message[:150] + "..." if len(message) > 150 else message
+                    message_preview = message[:800] + "..." if len(message) > 800 else message
                     view_text += f"💭 {sender} ({time_str}):\n    {message_preview}\n\n"
     
         # Add photo buttons in rows of 2
