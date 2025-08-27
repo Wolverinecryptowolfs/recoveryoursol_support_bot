@@ -2396,14 +2396,16 @@ class SupportBot:
         # Cancel handlers
         application.add_handler(CallbackQueryHandler(self.cancel_operation, pattern=r"^cancel_"))
         
-        # Message handlers
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_admin_input_enhanced))
-        application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        # Message handlers for keyboard buttons
         application.add_handler(MessageHandler(filters.Regex("^🎫 Create New Ticket$"), self.create_ticket))
         application.add_handler(MessageHandler(filters.Regex("^📋 My Tickets$"), self.my_tickets))
         application.add_handler(MessageHandler(filters.Regex("^ℹ️ Help$"), self.show_help))
         application.add_handler(MessageHandler(filters.Regex("^🔒 Close Ticket$"), self.user_close_ticket))
         
+        # General message handlers - KEEP THESE LAST
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_admin_input_enhanced))
+        application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+
         # Start the bot
         print("🤖 Support Bot is starting...")
         print("📸 Photo storage enabled")
